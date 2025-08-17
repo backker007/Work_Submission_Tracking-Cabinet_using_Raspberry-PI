@@ -1,0 +1,15 @@
+# ✅ requirements.txt - SmartLocker Project
+
+# Sensor and GPIO Drivers
+adafruit-circuitpython-vl53l0x      # VL53L0X Time-of-Flight Distance Sensor
+adafruit-circuitpython-pca9685      # PCA9685 Servo Controller
+adafruit-circuitpython-mcp230xx     # MCP23017 I/O Expander
+adafruit-blinka                     # Compatibility layer for Raspberry Pi GPIO
+RPi.GPIO                             # Native GPIO access on Raspberry Pi
+
+# MQTT
+paho-mqtt                            # MQTT client for publish/subscribe
+
+# (Optional Dev Tools - Uncomment if needed)
+# black                              # Code formatter
+# flake8                             # Python linter
