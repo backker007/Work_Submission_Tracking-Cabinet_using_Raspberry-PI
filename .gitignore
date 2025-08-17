@@ -1,0 +1,33 @@
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+
+# Virtual environment
+.venv/
+venv/
+ENV/
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Logs and temp files
+*.log
+*.tmp
+
+# IDE/editor settings
+.vscode/
+.idea/
+*.swp
+
+# Environment/config files
+.env
+config.json
+credentials.txt
+
+# MQTT debug dumps or test artifacts
+mqtt_test_payloads/
+
+# Backup files
+*~
+*.bak
