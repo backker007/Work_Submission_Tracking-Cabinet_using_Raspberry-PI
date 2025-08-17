@@ -8,7 +8,7 @@ import time
 import json
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from shared.mqtt_helpers import publish_status, publish_warning, get_command_subscriptions
+from shared.mqtt_helpers import publish_status, publish_warning, get_command_subscriptions, make_command_topic
 from shared.hardware_helpers import (
     init_mcp, init_xshuts, reset_vl53_addresses, init_sensors,
     read_sensor, move_servo_180, is_door_reliably_closed,
@@ -44,11 +44,7 @@ def on_message(client, userdata, msg):
         slot = int(topic.split("/")[3]) - 1
         role = payload.get("role", "")
     except (IndexError, ValueError):
-
-
         print(f"❌ Invalid topic or payload: {topic}")
-        
-        
         return
 
     if not is_valid_role(role):
@@ -98,7 +94,6 @@ def run_state_machine(index):
     })
     publish_status_slot(index)
     reading_active = False
-
 
 def handle_door_unlock(index):
     global reading_active

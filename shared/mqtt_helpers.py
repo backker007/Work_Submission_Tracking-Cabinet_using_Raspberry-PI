@@ -1,46 +1,31 @@
-# ✅ shared/mqtt_helpers.py
-# 🔧 ฟังก์ชันจัดการ MQTT สำหรับระบบ Multi-Node
-
+# mqtt_helpers.py
 import time
-import json
 from shared.utils import publish_mqtt
 
-# ==== TOPIC TEMPLATE (Multi-Node) ====
+# สร้าง Topic Template
 TOPIC_STATUS = "smartlocker/{node_id}/slot/{slot_id}/status"
 TOPIC_WARNING = "smartlocker/{node_id}/slot/{slot_id}/warning"
-TOPIC_COMMAND_OPEN = "smartlocker/+/slot/+/command/open"
-TOPIC_COMMAND_UNLOCK = "smartlocker/+/slot/+/command/unlock"
+TOPIC_COMMAND = "smartlocker/{node_id}/slot/{slot_id}/command/{action}"
 
-# Optional future topics (commented out)
-# TOPIC_LOG = "smartlocker/{node_id}/log"
-# TOPIC_HEARTBEAT = "smartlocker/{node_id}/heartbeat"
+# ฟังก์ชันเพื่อสร้างหัวข้อ MQTT
+def make_topic(topic_type, node_id, slot_id, action=None):
+    if action:
+        return topic_type.format(node_id=node_id, slot_id=slot_id, action=action)
+    return topic_type.format(node_id=node_id, slot_id=slot_id)
 
-# ==== Topic Generators ====
-def make_status_topic(node_id, slot_id):
-    return TOPIC_STATUS.format(node_id=node_id, slot_id=slot_id)
-
-def make_warning_topic(node_id, slot_id):
-    return TOPIC_WARNING.format(node_id=node_id, slot_id=slot_id)
-
-def get_command_subscriptions():
-    return [TOPIC_COMMAND_OPEN, TOPIC_COMMAND_UNLOCK]
-
-# ==== Publish Utilities ====
+# ฟังก์ชันสำหรับการ Publish ข้อมูล
 def publish_status(node_id, slot_id, status_dict):
-    topic = make_status_topic(node_id, slot_id)
-    payload = {
-        **status_dict,
-        "slot": slot_id,
-        "node": node_id
-    }
-    publish_mqtt(topic, payload)
+    topic = make_topic(TOPIC_STATUS, node_id, slot_id)
+    publish_mqtt(topic, status_dict)
 
 def publish_warning(node_id, slot_id, message="ประตูยังไม่ปิดสนิทหลังการเปิดใช้งาน"):
-    topic = make_warning_topic(node_id, slot_id)
+    topic = make_topic(TOPIC_WARNING, node_id, slot_id)
     payload = {
-        "slot": slot_id,
-        "node": node_id,
         "message": message,
         "timestamp": time.time()
     }
     publish_mqtt(topic, payload)
+
+# ฟังก์ชันสำหรับการสร้าง topic สำหรับคำสั่ง
+def make_command_topic(node_id, slot_id, action):
+    return make_topic(TOPIC_COMMAND, node_id, slot_id, action)

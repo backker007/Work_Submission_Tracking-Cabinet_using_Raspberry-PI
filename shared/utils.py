@@ -1,35 +1,21 @@
-# ✅ shared/utils.py
-# 📡 ฟังก์ชันพื้นฐานสำหรับ publish MQTT แบบ low-level พร้อม retry
+# utils.py
+# ตั้งค่าตัวแปรสำหรับ MQTT broker
+BROKER_URL = "broker.emqx.io"  # หรือใส่ URL broker ที่คุณใช้
+BROKER_PORT = 1883  # พอร์ต default ของ MQTT
+BROKER_KEEP_ALIVE = 60  # ค่า keep-alive สำหรับ MQTT
 
-import time
-import json
-import paho.mqtt.client as mqtt
-
-# ==== MQTT CORE ====
-def publish_mqtt(topic, payload, broker="localhost", port=1883, retry=3):
+def publish_mqtt(topic, payload):
     """
-    ส่งข้อมูล MQTT ไปยัง broker ที่ระบุ พร้อม retry หากล้มเหลว
-
-    Args:
-        topic (str): หัวข้อ MQTT เช่น "smartlocker/C01/slot/1/status"
-        payload (dict): ข้อมูลที่ต้องการส่ง (จะถูกแปลงเป็น JSON)
-        broker (str): ที่อยู่ MQTT broker (default: localhost)
-        port (int): พอร์ต MQTT (default: 1883)
-        retry (int): จำนวนครั้งสูงสุดในการ retry หากส่งไม่สำเร็จ
+    ฟังก์ชันสำหรับ publish ข้อมูลไปยัง MQTT broker
     """
-    for attempt in range(retry):
-        try:
-            client = mqtt.Client()
-            client.connect(broker, port, 60)
-
-            client.loop_start()
-            client.publish(topic, json.dumps(payload))
-            time.sleep(0.5)
-            client.loop_stop()
-
-            client.disconnect()
-            print(f"[MQTT] Published to {topic} → {payload}")
-            return
-        except Exception as e:
-            print(f"❌ MQTT Publish Error (attempt {attempt+1}): {e}")
-            time.sleep(2)
+    import paho.mqtt.client as mqtt
+    client = mqtt.Client()
+    try:
+        # เชื่อมต่อไปยัง MQTT broker ตามค่าที่ตั้งไว้ใน utils.py
+        client.connect(BROKER_URL, BROKER_PORT, BROKER_KEEP_ALIVE)
+        client.publish(topic, payload)
+        print(f"[MQTT] Published to {topic}: {payload}")
+    except Exception as e:
+        print(f"❌ MQTT Error: {e}")
+    finally:
+        client.disconnect()
