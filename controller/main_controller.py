@@ -147,7 +147,7 @@ def main():
     last_check = time.time()
 
     import paho.mqtt.client as mqtt
-    client = mqtt.Client()
+    client = mqtt.Client(callback_api_version=mqtt.CallbackAPIVersion.VERSION2)
     client.on_message = on_message
     client.connect("localhost", 1883, 60)
     for topic in get_command_subscriptions():
