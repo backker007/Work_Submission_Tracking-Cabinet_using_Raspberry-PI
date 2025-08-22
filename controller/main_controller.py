@@ -6,7 +6,25 @@ import os
 import threading
 import time
 import json
+
+# # ---- Load project root into path ----
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+# # ---- Load .env automatically ----
+# from dotenv import load_dotenv
+# load_dotenv(".env")  # โหลดไฟล์ .env ที่ root ของโปรเจ็กต์
+
+from dotenv import load_dotenv
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]   # โฟลเดอร์รากของโปรเจ็กต์
+load_dotenv(ROOT / ".env")
+
+# (ชั่วคราว) debug ให้เห็นค่าที่อ่านได้จริง
+import os
+print("[MQTT cfg]", os.getenv("MQTT_HOST"), os.getenv("MQTT_PORT"),
+      "TLS="+str(os.getenv("MQTT_TLS")), "USER="+str(os.getenv("MQTT_USERNAME")))
+
 
 from shared.mqtt_helpers import publish_status, publish_warning, get_command_subscriptions, make_command_topic
 from shared.hardware_helpers import (
@@ -17,8 +35,8 @@ from shared.hardware_helpers import (
 from shared.role_helpers import can_insert, can_unlock, is_valid_role
 
 # ==== CONFIGURATION ====
-NODE_ID = "C01"
-CHECK_INTERVAL = 120
+NODE_ID = os.getenv("NODE_ID", "C01")
+CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", "120"))
 slot_status = [{"capacity_mm": 0, "available": True, "door_closed": True} for _ in range(4)]
 reading_active = False
 selected_sensor_index = None
@@ -129,12 +147,51 @@ def handle_door_unlock(index):
     publish_status_slot(index)
     reading_active = False
 
+# ==== MQTT CONNECTOR (Subscriber) ====
+def _build_mqtt_client():
+    import ssl
+    import paho.mqtt.client as mqtt
+
+    host = os.getenv("MQTT_HOST", "localhost")
+    port = int(os.getenv("MQTT_PORT", "1883"))
+    username = os.getenv("MQTT_USERNAME")
+    password = os.getenv("MQTT_PASSWORD")
+    use_tls = bool(int(os.getenv("MQTT_TLS", "0")))
+    use_ws = bool(int(os.getenv("MQTT_WS", "0")))
+    client_id = os.getenv("MQTT_CLIENT_ID")
+    ca_path = os.getenv("MQTT_CA")  # optional
+
+    client = mqtt.Client(
+        callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
+        client_id=client_id,
+        transport="websockets" if use_ws else "tcp",
+        protocol=mqtt.MQTTv311,
+    )
+
+    if username:
+        client.username_pw_set(username=username, password=password)
+
+    if use_tls:
+        if ca_path:
+            client.tls_set(ca_certs=ca_path, tls_version=ssl.PROTOCOL_TLS_CLIENT)
+        else:
+            import ssl as _ssl
+            client.tls_set_context(_ssl.create_default_context())
+        client.tls_insecure_set(False)
+        if port == 1883:
+            port = 8883  # default TLS port if not provided
+
+    client.on_message = on_message
+    client.connect(host, port, keepalive=60)
+    return client
+
 # ==== MAIN LOOP ====
 def main():
     init_mcp()
     init_xshuts()
     reset_vl53_addresses()
     init_sensors()
+
     # ✅ INITIAL STATUS BROADCAST
     for i in range(len(slot_status)):
         slot_status[i] = {
@@ -144,14 +201,13 @@ def main():
         }
         publish_status_slot(i)
         time.sleep(0.1)
+
     last_check = time.time()
 
-    import paho.mqtt.client as mqtt
-    client = mqtt.Client(callback_api_version=mqtt.CallbackAPIVersion.VERSION2)
-    client.on_message = on_message
-    client.connect("localhost", 1883, 60)
+    client = _build_mqtt_client()
     for topic in get_command_subscriptions():
         client.subscribe(topic)
+        print(f"[MQTT] Subscribed: {topic}")
     client.loop_start()
 
     try:
@@ -174,6 +230,12 @@ def main():
             time.sleep(0.1)
     except KeyboardInterrupt:
         print("\n🛑 หยุดการทำงาน")
+    finally:
+        try:
+            client.loop_stop()
+            client.disconnect()
+        except Exception:
+            pass
 
 if __name__ == "__main__":
     main()

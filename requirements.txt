@@ -9,6 +9,7 @@ RPi.GPIO                             # Native GPIO access on Raspberry Pi
 
 # MQTT
 paho-mqtt                            # MQTT client for publish/subscribe
+python-dotenv
 
 # (Optional Dev Tools - Uncomment if needed)
 # black                              # Code formatter
