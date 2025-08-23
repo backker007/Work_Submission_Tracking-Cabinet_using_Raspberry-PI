@@ -24,6 +24,7 @@ Thumbs.db
 .env
 config.json
 credentials.txt
+Desktop/Work_Submission_Tracking-Cabinet_using_Raspberry-PI/.env
 
 # MQTT debug dumps or test artifacts
 mqtt_test_payloads/
