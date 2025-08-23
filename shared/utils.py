@@ -21,14 +21,7 @@ def publish_mqtt(
     client_id=None,
     websocket=False,        # True = MQTT over WebSocket (wss), มักใช้พอร์ต 443
 ):
-    """
-    Cloud‑ready MQTT publisher.
-
-    ถ้าไม่ได้ส่งพารามิเตอร์ จะ fallback ไปอ่านจาก ENV:
-      MQTT_HOST, MQTT_PORT, MQTT_USERNAME, MQTT_PASSWORD,
-      MQTT_TLS (1/0), MQTT_WS (1/0), MQTT_CLIENT_ID, MQTT_CA
-    """
-
+ 
     # ---------- Load defaults from ENV ----------
     broker    = broker    or os.getenv("MQTT_HOST", "localhost")
     port      = int(port or os.getenv("MQTT_PORT", "1883"))
