@@ -1,8 +1,198 @@
 [
     {
+        "id": "c1424ba7df711ec6",
+        "type": "tab",
+        "label": "SmartLocker",
+        "disabled": false,
+        "info": "Full UI + MQTT + Logic พร้อมใช้งานจริง"
+    },
+    {
+        "id": "badd83b687b13a56",
+        "type": "group",
+        "z": "c1424ba7df711ec6",
+        "style": {
+            "stroke": "#999999",
+            "stroke-opacity": "1",
+            "fill": "none",
+            "fill-opacity": "1",
+            "label": true,
+            "label-position": "nw",
+            "color": "#a4a4a4"
+        },
+        "nodes": [
+            "2f2eddecf8e36e78",
+            "55af4ea870d71830",
+            "4c696b9c1c45857e",
+            "87c362e5dc7a5dcc",
+            "19170a6fbd633d59",
+            "bcf14e13b806c162",
+            "6c39f16c7c9282ad",
+            "6f5975d7055e163c",
+            "614a22e7c9677e9e",
+            "db5cb518f4145ff1",
+            "2141e5b0b0bd83f8",
+            "248892cb96e8e673"
+        ],
+        "x": 1374,
+        "y": 359,
+        "w": 702,
+        "h": 262
+    },
+    {
+        "id": "b00f289a50fbed9b",
+        "type": "group",
+        "z": "c1424ba7df711ec6",
+        "style": {
+            "stroke": "#999999",
+            "stroke-opacity": "1",
+            "fill": "none",
+            "fill-opacity": "1",
+            "label": true,
+            "label-position": "nw",
+            "color": "#a4a4a4"
+        },
+        "nodes": [
+            "slot4_door",
+            "5a45d4df5322c0ab",
+            "64441d53c948c63b",
+            "11a9869fad1bf3a6",
+            "45331f21186f734a",
+            "cc3985ddcdb8686b",
+            "08c5348cb9b85fc7",
+            "dade3c29f436c11a",
+            "19f160cb8474e371",
+            "6c2a3bd9d658d2c5",
+            "7477357c846e7ad7",
+            "17b67ac599d3ebdc",
+            "0a8c963ba6616dc9",
+            "abe578454adef1e7",
+            "d828aef81c346fb5",
+            "0a903c7d1c994e70",
+            "71b5862166eac2b5",
+            "f22c72b01936d606",
+            "7193bdb14f06a760",
+            "045bb5f8e0ce68d4",
+            "mqtt_in_status_c01",
+            "parse_slot_status",
+            "switch_slot",
+            "slot1_avail",
+            "slot1_door",
+            "slot2_avail",
+            "slot2_door",
+            "slot3_avail",
+            "slot3_door",
+            "slot4_avail"
+        ],
+        "x": 2374,
+        "y": 279,
+        "w": 1052,
+        "h": 582
+    },
+    {
+        "id": "9f073f4918a13073",
+        "type": "group",
+        "z": "c1424ba7df711ec6",
+        "style": {
+            "stroke": "#999999",
+            "stroke-opacity": "1",
+            "fill": "none",
+            "fill-opacity": "1",
+            "label": true,
+            "label-position": "nw",
+            "color": "#a4a4a4"
+        },
+        "nodes": [
+            "05c1d2f6cbfc467e",
+            "376866f46e70712c",
+            "21fd4305e8dab4d9",
+            "e38a23a99bbcec83",
+            "2d29c0cbb10e3de8",
+            "c497e94aecfc57b6",
+            "5e0dab94047f94b3",
+            "1aa9f33369395fcb",
+            "cf97c795c18b48da",
+            "a24466856cec8e3e",
+            "693f04bfaf0956bd",
+            "3984302fda879a2b",
+            "7ab7f28482ee27ea",
+            "e5a3d063799bd4ed",
+            "3014e9fdf0dd2202",
+            "a76dc7d3375f4838",
+            "4022746cf8c24a90",
+            "b3afd6c7d3a7f3aa",
+            "ec505e2f89b8c7a4",
+            "b639528277b1b89f",
+            "3a461afe886a9167",
+            "d68b8824f926d82f",
+            "56475e954f321b0f",
+            "0b3143a258d904b4",
+            "d0b712b1e2f29874",
+            "9c74eac2ace06c1f",
+            "98916fb147754c07",
+            "73e723b84026e6e7",
+            "ea9548c207e51f1d",
+            "7ba69793e5692503"
+        ],
+        "x": 2304,
+        "y": 999,
+        "w": 1022,
+        "h": 582
+    },
+    {
+        "id": "1e7db22b699ea2fa",
+        "type": "group",
+        "z": "c1424ba7df711ec6",
+        "style": {
+            "stroke": "#999999",
+            "stroke-opacity": "1",
+            "fill": "none",
+            "fill-opacity": "1",
+            "label": true,
+            "label-position": "nw",
+            "color": "#a4a4a4"
+        },
+        "nodes": [
+            "167190bdef261872",
+            "e1ee8a3a96cd228d",
+            "4a4fe29489ebfb2d",
+            "aa441792835fc07f",
+            "1c86a7c9e1d45110",
+            "518066d71377127a",
+            "d6942d4db765a963",
+            "88f3243c7fe48908",
+            "7f5164a707bab57f",
+            "992889bb69817a0b",
+            "7ed8f632cfd441e2",
+            "1d6e4a9ccf5b5cf2",
+            "72dd0bb8d63e6da0",
+            "1fb844d7b50d628d",
+            "62ce0bc3f51b2410",
+            "bc5343e122801a51",
+            "3690159ca771b1b9",
+            "501da68db39b4eed",
+            "73bd790808a195f9",
+            "b5cd1b1b61580c34",
+            "4a5f7254e65ec768",
+            "48d402d4f132463a",
+            "81ca48d153159dfe",
+            "37d2f95c245808cd",
+            "9265c8889536d89b",
+            "0b36eca342b01928",
+            "72de8ae526bf9a36",
+            "6f4035583ec3e71e",
+            "29ca03393f71e301",
+            "5fabbece1f96aee8"
+        ],
+        "x": 984,
+        "y": 979,
+        "w": 1022,
+        "h": 582
+    },
+    {
         "id": "2f2eddecf8e36e78",
         "type": "ui_dropdown",
         "z": "c1424ba7df711ec6",
+        "g": "badd83b687b13a56",
         "name": "Role Select",
         "label": "Select Role",
         "tooltip": "Choose user role",
@@ -45,6 +235,7 @@
         "id": "55af4ea870d71830",
         "type": "ui_text_input",
         "z": "c1424ba7df711ec6",
+        "g": "badd83b687b13a56",
         "name": "Node Select",
         "label": "Node ID",
         "tooltip": "Enter node (e.g. C01)",
@@ -71,6 +262,7 @@
         "id": "4c696b9c1c45857e",
         "type": "ui_dropdown",
         "z": "c1424ba7df711ec6",
+        "g": "badd83b687b13a56",
         "name": "Slot Select",
         "label": "Slot",
         "tooltip": "Select slot number",
@@ -118,6 +310,7 @@
         "id": "87c362e5dc7a5dcc",
         "type": "function",
         "z": "c1424ba7df711ec6",
+        "g": "badd83b687b13a56",
         "name": "Store Role",
         "func": "flow.set(\"role\", msg.payload); return null;",
         "outputs": 1,
@@ -133,6 +326,7 @@
         "id": "19170a6fbd633d59",
         "type": "function",
         "z": "c1424ba7df711ec6",
+        "g": "badd83b687b13a56",
         "name": "Store Node",
         "func": "flow.set(\"node\", msg.payload); return null;",
         "outputs": 1,
@@ -148,6 +342,7 @@
         "id": "bcf14e13b806c162",
         "type": "function",
         "z": "c1424ba7df711ec6",
+        "g": "badd83b687b13a56",
         "name": "Store Slot",
         "func": "flow.set(\"slot\", msg.payload); return null;",
         "outputs": 1,
@@ -168,6 +363,7 @@
         "id": "6c39f16c7c9282ad",
         "type": "ui_button",
         "z": "c1424ba7df711ec6",
+        "g": "badd83b687b13a56",
         "name": "Open Slot",
         "group": "2e8850357615d79c",
         "order": 13,
@@ -196,6 +392,7 @@
         "id": "6f5975d7055e163c",
         "type": "ui_button",
         "z": "c1424ba7df711ec6",
+        "g": "badd83b687b13a56",
         "name": "Unlock Door",
         "group": "2e8850357615d79c",
         "order": 16,
@@ -224,6 +421,7 @@
         "id": "614a22e7c9677e9e",
         "type": "function",
         "z": "c1424ba7df711ec6",
+        "g": "badd83b687b13a56",
         "name": "Build Open Command",
         "func": "msg.role = flow.get(\"role\");\nmsg.node = flow.get(\"node\");\nmsg.slot = flow.get(\"slot\");\nif (!msg.node || !msg.slot || !msg.role) return null;\nmsg.topic = `smartlocker/${msg.node}/slot/${msg.slot}/command/open`;\nmsg.payload = { role: msg.role };\nreturn msg;",
         "outputs": 1,
@@ -240,6 +438,7 @@
         "id": "db5cb518f4145ff1",
         "type": "function",
         "z": "c1424ba7df711ec6",
+        "g": "badd83b687b13a56",
         "name": "Build Unlock Command",
         "func": "msg.role = flow.get(\"role\");\nmsg.node = flow.get(\"node\");\nmsg.slot = flow.get(\"slot\");\nif (!msg.node || !msg.slot || !msg.role) return null;\nmsg.topic = `smartlocker/${msg.node}/slot/${msg.slot}/command/unlock`;\nmsg.payload = { role: msg.role };\nreturn msg;",
         "outputs": 1,
@@ -256,11 +455,17 @@
         "id": "2141e5b0b0bd83f8",
         "type": "mqtt out",
         "z": "c1424ba7df711ec6",
+        "g": "badd83b687b13a56",
         "name": "Send Command",
         "topic": "",
         "qos": "2",
         "retain": "",
-        "broker": "mqtt_broker",
+        "respTopic": "",
+        "contentType": "",
+        "userProps": "",
+        "correl": "",
+        "expiry": "",
+        "broker": "0d5b4aa65b5c1506",
         "x": 1970,
         "y": 480,
         "wires": []
@@ -269,6 +474,7 @@
         "id": "248892cb96e8e673",
         "type": "debug",
         "z": "c1424ba7df711ec6",
+        "g": "badd83b687b13a56",
         "name": "debug 1",
         "active": true,
         "tosidebar": true,
@@ -285,11 +491,12 @@
         "id": "5a45d4df5322c0ab",
         "type": "ui_gauge",
         "z": "c1424ba7df711ec6",
+        "g": "b00f289a50fbed9b",
         "name": "Gauge 1",
         "group": "55adae7c3460e3f2",
         "order": 1,
-        "width": 6,
-        "height": 3,
+        "width": 10,
+        "height": 5,
         "gtype": "gage",
         "title": "ความจุ (mm)",
         "label": "mm",
@@ -313,10 +520,11 @@
         "id": "64441d53c948c63b",
         "type": "ui_led",
         "z": "c1424ba7df711ec6",
-        "order": 5,
+        "g": "b00f289a50fbed9b",
+        "order": 2,
         "group": "55adae7c3460e3f2",
-        "width": 0,
-        "height": 0,
+        "width": 10,
+        "height": 1,
         "label": "พร้อมใช้งาน",
         "colorForValue": [
             {
@@ -342,10 +550,11 @@
         "id": "11a9869fad1bf3a6",
         "type": "ui_led",
         "z": "c1424ba7df711ec6",
-        "order": 6,
+        "g": "b00f289a50fbed9b",
+        "order": 3,
         "group": "55adae7c3460e3f2",
-        "width": 0,
-        "height": 0,
+        "width": 10,
+        "height": 1,
         "label": "ประตู",
         "colorForValue": [
             {
@@ -371,11 +580,12 @@
         "id": "45331f21186f734a",
         "type": "ui_gauge",
         "z": "c1424ba7df711ec6",
+        "g": "b00f289a50fbed9b",
         "name": "Gauge 2",
         "group": "8891a23f0741bd83",
         "order": 1,
-        "width": 6,
-        "height": 3,
+        "width": 10,
+        "height": 5,
         "gtype": "gage",
         "title": "ความจุ (mm)",
         "label": "mm",
@@ -397,10 +607,11 @@
         "id": "cc3985ddcdb8686b",
         "type": "ui_led",
         "z": "c1424ba7df711ec6",
-        "order": 5,
+        "g": "b00f289a50fbed9b",
+        "order": 2,
         "group": "8891a23f0741bd83",
-        "width": 0,
-        "height": 0,
+        "width": 10,
+        "height": 1,
         "label": "พร้อมใช้งาน",
         "colorForValue": [
             {
@@ -426,10 +637,11 @@
         "id": "08c5348cb9b85fc7",
         "type": "ui_led",
         "z": "c1424ba7df711ec6",
-        "order": 6,
+        "g": "b00f289a50fbed9b",
+        "order": 3,
         "group": "8891a23f0741bd83",
-        "width": 0,
-        "height": 0,
+        "width": 10,
+        "height": 1,
         "label": "ประตู",
         "colorForValue": [
             {
@@ -455,11 +667,12 @@
         "id": "dade3c29f436c11a",
         "type": "ui_gauge",
         "z": "c1424ba7df711ec6",
+        "g": "b00f289a50fbed9b",
         "name": "Gauge 3",
         "group": "83c9a82b0e7d369b",
         "order": 1,
-        "width": 6,
-        "height": 3,
+        "width": 10,
+        "height": 5,
         "gtype": "gage",
         "title": "ความจุ (mm)",
         "label": "mm",
@@ -481,10 +694,11 @@
         "id": "19f160cb8474e371",
         "type": "ui_led",
         "z": "c1424ba7df711ec6",
-        "order": 5,
+        "g": "b00f289a50fbed9b",
+        "order": 2,
         "group": "83c9a82b0e7d369b",
-        "width": 0,
-        "height": 0,
+        "width": 10,
+        "height": 1,
         "label": "พร้อมใช้งาน",
         "colorForValue": [
             {
@@ -510,10 +724,11 @@
         "id": "6c2a3bd9d658d2c5",
         "type": "ui_led",
         "z": "c1424ba7df711ec6",
-        "order": 6,
+        "g": "b00f289a50fbed9b",
+        "order": 3,
         "group": "83c9a82b0e7d369b",
-        "width": 0,
-        "height": 0,
+        "width": 10,
+        "height": 1,
         "label": "ประตู",
         "colorForValue": [
             {
@@ -539,11 +754,12 @@
         "id": "7477357c846e7ad7",
         "type": "ui_gauge",
         "z": "c1424ba7df711ec6",
+        "g": "b00f289a50fbed9b",
         "name": "Gauge 4",
         "group": "6b51d0054bd50a05",
         "order": 1,
-        "width": 6,
-        "height": 3,
+        "width": 10,
+        "height": 5,
         "gtype": "gage",
         "title": "ความจุ (mm)",
         "label": "mm",
@@ -565,10 +781,11 @@
         "id": "17b67ac599d3ebdc",
         "type": "ui_led",
         "z": "c1424ba7df711ec6",
-        "order": 5,
+        "g": "b00f289a50fbed9b",
+        "order": 2,
         "group": "6b51d0054bd50a05",
-        "width": 0,
-        "height": 0,
+        "width": 10,
+        "height": 1,
         "label": "พร้อมใช้งาน",
         "colorForValue": [
             {
@@ -594,10 +811,11 @@
         "id": "0a8c963ba6616dc9",
         "type": "ui_led",
         "z": "c1424ba7df711ec6",
-        "order": 6,
+        "g": "b00f289a50fbed9b",
+        "order": 3,
         "group": "6b51d0054bd50a05",
-        "width": 0,
-        "height": 0,
+        "width": 10,
+        "height": 1,
         "label": "ประตู",
         "colorForValue": [
             {
@@ -623,11 +841,12 @@
         "id": "abe578454adef1e7",
         "type": "mqtt in",
         "z": "c1424ba7df711ec6",
+        "g": "b00f289a50fbed9b",
         "name": "Status C01",
         "topic": "smartlocker/C01/slot/+/status",
         "qos": "0",
         "datatype": "json",
-        "broker": "mqtt_broker",
+        "broker": "0d5b4aa65b5c1506",
         "nl": false,
         "rap": true,
         "rh": 0,
@@ -644,6 +863,7 @@
         "id": "d828aef81c346fb5",
         "type": "function",
         "z": "c1424ba7df711ec6",
+        "g": "b00f289a50fbed9b",
         "name": "Split C01 Payload",
         "func": "let slot = msg.topic.split(\"/\")[3];\nlet status = msg.payload;\nstatus.slot = slot;\nmsg.payload = status;\nmsg.slot = slot;\nreturn msg;",
         "outputs": 1,
@@ -664,6 +884,7 @@
         "id": "0a903c7d1c994e70",
         "type": "switch",
         "z": "c1424ba7df711ec6",
+        "g": "b00f289a50fbed9b",
         "name": "Split by Slot",
         "property": "msg.slot",
         "propertyType": "msg",
@@ -713,6 +934,7 @@
         "id": "71b5862166eac2b5",
         "type": "function",
         "z": "c1424ba7df711ec6",
+        "g": "b00f289a50fbed9b",
         "name": "Gauge Slot 1",
         "func": "return {payload: msg.payload.capacity_mm};",
         "outputs": 1,
@@ -733,6 +955,7 @@
         "id": "f22c72b01936d606",
         "type": "function",
         "z": "c1424ba7df711ec6",
+        "g": "b00f289a50fbed9b",
         "name": "Gauge Slot 2",
         "func": "return {payload: msg.payload.capacity_mm};",
         "outputs": 1,
@@ -753,6 +976,7 @@
         "id": "7193bdb14f06a760",
         "type": "function",
         "z": "c1424ba7df711ec6",
+        "g": "b00f289a50fbed9b",
         "name": "Gauge Slot 3",
         "func": "return {payload: msg.payload.capacity_mm};",
         "outputs": 1,
@@ -773,6 +997,7 @@
         "id": "045bb5f8e0ce68d4",
         "type": "function",
         "z": "c1424ba7df711ec6",
+        "g": "b00f289a50fbed9b",
         "name": "Gauge Slot 4",
         "func": "return {payload: msg.payload.capacity_mm};",
         "outputs": 1,
@@ -793,11 +1018,12 @@
         "id": "mqtt_in_status_c01",
         "type": "mqtt in",
         "z": "c1424ba7df711ec6",
+        "g": "b00f289a50fbed9b",
         "name": "MQTT Status C01",
         "topic": "smartlocker/C01/slot/+/status",
-        "qos": "0",
+        "qos": "1",
         "datatype": "json",
-        "broker": "mqtt_broker",
+        "broker": "0d5b4aa65b5c1506",
         "nl": false,
         "rap": false,
         "inputs": 0,
@@ -813,6 +1039,7 @@
         "id": "parse_slot_status",
         "type": "function",
         "z": "c1424ba7df711ec6",
+        "g": "b00f289a50fbed9b",
         "name": "Parse Slot & Status",
         "func": "const slot = msg.topic.split('/')[3];\nmsg.slot = slot;\nmsg.available = msg.payload.available;\nmsg.door = msg.payload.door_closed;\nreturn msg;",
         "outputs": 1,
@@ -833,6 +1060,7 @@
         "id": "switch_slot",
         "type": "switch",
         "z": "c1424ba7df711ec6",
+        "g": "b00f289a50fbed9b",
         "name": "By Slot",
         "property": "slot",
         "propertyType": "msg",
@@ -886,6 +1114,7 @@
         "id": "slot1_avail",
         "type": "change",
         "z": "c1424ba7df711ec6",
+        "g": "b00f289a50fbed9b",
         "name": "Available 1",
         "rules": [
             {
@@ -908,6 +1137,7 @@
         "id": "slot1_door",
         "type": "change",
         "z": "c1424ba7df711ec6",
+        "g": "b00f289a50fbed9b",
         "name": "Door 1",
         "rules": [
             {
@@ -930,6 +1160,7 @@
         "id": "slot2_avail",
         "type": "change",
         "z": "c1424ba7df711ec6",
+        "g": "b00f289a50fbed9b",
         "name": "Available 2",
         "rules": [
             {
@@ -952,6 +1183,7 @@
         "id": "slot2_door",
         "type": "change",
         "z": "c1424ba7df711ec6",
+        "g": "b00f289a50fbed9b",
         "name": "Door 2",
         "rules": [
             {
@@ -974,6 +1206,7 @@
         "id": "slot3_avail",
         "type": "change",
         "z": "c1424ba7df711ec6",
+        "g": "b00f289a50fbed9b",
         "name": "Available 3",
         "rules": [
             {
@@ -996,6 +1229,7 @@
         "id": "slot3_door",
         "type": "change",
         "z": "c1424ba7df711ec6",
+        "g": "b00f289a50fbed9b",
         "name": "Door 3",
         "rules": [
             {
@@ -1018,6 +1252,7 @@
         "id": "slot4_avail",
         "type": "change",
         "z": "c1424ba7df711ec6",
+        "g": "b00f289a50fbed9b",
         "name": "Available 4",
         "rules": [
             {
@@ -1040,6 +1275,7 @@
         "id": "slot4_door",
         "type": "change",
         "z": "c1424ba7df711ec6",
+        "g": "b00f289a50fbed9b",
         "name": "Door 4",
         "rules": [
             {
@@ -1062,11 +1298,12 @@
         "id": "05c1d2f6cbfc467e",
         "type": "mqtt in",
         "z": "c1424ba7df711ec6",
+        "g": "9f073f4918a13073",
         "name": "Status C02",
         "topic": "smartlocker/C02/slot/+/status",
-        "qos": "0",
+        "qos": "1",
         "datatype": "json",
-        "broker": "mqtt_broker",
+        "broker": "0d5b4aa65b5c1506",
         "nl": false,
         "rap": true,
         "rh": 0,
@@ -1083,6 +1320,7 @@
         "id": "376866f46e70712c",
         "type": "function",
         "z": "c1424ba7df711ec6",
+        "g": "9f073f4918a13073",
         "name": "Split C01 Payload",
         "func": "let slot = msg.topic.split(\"/\")[3];\nlet status = msg.payload;\nstatus.slot = slot;\nmsg.payload = status;\nmsg.slot = slot;\nreturn msg;",
         "outputs": 1,
@@ -1103,6 +1341,7 @@
         "id": "21fd4305e8dab4d9",
         "type": "switch",
         "z": "c1424ba7df711ec6",
+        "g": "9f073f4918a13073",
         "name": "Split by Slot",
         "property": "msg.slot",
         "propertyType": "msg",
@@ -1152,6 +1391,7 @@
         "id": "e38a23a99bbcec83",
         "type": "function",
         "z": "c1424ba7df711ec6",
+        "g": "9f073f4918a13073",
         "name": "Gauge Slot 1",
         "func": "return {payload: msg.payload.capacity_mm};",
         "outputs": 1,
@@ -1163,13 +1403,16 @@
         "x": 3000,
         "y": 1420,
         "wires": [
-            []
+            [
+                "56475e954f321b0f"
+            ]
         ]
     },
     {
         "id": "2d29c0cbb10e3de8",
         "type": "function",
         "z": "c1424ba7df711ec6",
+        "g": "9f073f4918a13073",
         "name": "Gauge Slot 2",
         "func": "return {payload: msg.payload.capacity_mm};",
         "outputs": 1,
@@ -1178,16 +1421,19 @@
         "initialize": "",
         "finalize": "",
         "libs": [],
-        "x": 3000,
+        "x": 2990,
         "y": 1460,
         "wires": [
-            []
+            [
+                "0b3143a258d904b4"
+            ]
         ]
     },
     {
         "id": "c497e94aecfc57b6",
         "type": "function",
         "z": "c1424ba7df711ec6",
+        "g": "9f073f4918a13073",
         "name": "Gauge Slot 3",
         "func": "return {payload: msg.payload.capacity_mm};",
         "outputs": 1,
@@ -1199,13 +1445,16 @@
         "x": 3000,
         "y": 1500,
         "wires": [
-            []
+            [
+                "d0b712b1e2f29874"
+            ]
         ]
     },
     {
         "id": "5e0dab94047f94b3",
         "type": "function",
         "z": "c1424ba7df711ec6",
+        "g": "9f073f4918a13073",
         "name": "Gauge Slot 4",
         "func": "return {payload: msg.payload.capacity_mm};",
         "outputs": 1,
@@ -1217,18 +1466,21 @@
         "x": 3000,
         "y": 1540,
         "wires": [
-            []
+            [
+                "9c74eac2ace06c1f"
+            ]
         ]
     },
     {
         "id": "1aa9f33369395fcb",
         "type": "mqtt in",
         "z": "c1424ba7df711ec6",
+        "g": "9f073f4918a13073",
         "name": "MQTT Status C02",
         "topic": "smartlocker/C02/slot/+/status",
-        "qos": "0",
+        "qos": "1",
         "datatype": "json",
-        "broker": "mqtt_broker",
+        "broker": "0d5b4aa65b5c1506",
         "nl": false,
         "rap": false,
         "inputs": 0,
@@ -1244,6 +1496,7 @@
         "id": "cf97c795c18b48da",
         "type": "function",
         "z": "c1424ba7df711ec6",
+        "g": "9f073f4918a13073",
         "name": "Parse Slot & Status",
         "func": "const slot = msg.topic.split('/')[3];\nmsg.slot = slot;\nmsg.available = msg.payload.available;\nmsg.door = msg.payload.door_closed;\nreturn msg;",
         "outputs": 1,
@@ -1264,6 +1517,7 @@
         "id": "a24466856cec8e3e",
         "type": "switch",
         "z": "c1424ba7df711ec6",
+        "g": "9f073f4918a13073",
         "name": "By Slot",
         "property": "slot",
         "propertyType": "msg",
@@ -1317,6 +1571,7 @@
         "id": "693f04bfaf0956bd",
         "type": "change",
         "z": "c1424ba7df711ec6",
+        "g": "9f073f4918a13073",
         "name": "Available 1",
         "rules": [
             {
@@ -1339,6 +1594,7 @@
         "id": "3984302fda879a2b",
         "type": "change",
         "z": "c1424ba7df711ec6",
+        "g": "9f073f4918a13073",
         "name": "Door 1",
         "rules": [
             {
@@ -1361,6 +1617,7 @@
         "id": "7ab7f28482ee27ea",
         "type": "change",
         "z": "c1424ba7df711ec6",
+        "g": "9f073f4918a13073",
         "name": "Available 2",
         "rules": [
             {
@@ -1383,6 +1640,7 @@
         "id": "e5a3d063799bd4ed",
         "type": "change",
         "z": "c1424ba7df711ec6",
+        "g": "9f073f4918a13073",
         "name": "Door 2",
         "rules": [
             {
@@ -1405,6 +1663,7 @@
         "id": "3014e9fdf0dd2202",
         "type": "change",
         "z": "c1424ba7df711ec6",
+        "g": "9f073f4918a13073",
         "name": "Available 3",
         "rules": [
             {
@@ -1427,6 +1686,7 @@
         "id": "a76dc7d3375f4838",
         "type": "change",
         "z": "c1424ba7df711ec6",
+        "g": "9f073f4918a13073",
         "name": "Door 3",
         "rules": [
             {
@@ -1449,6 +1709,7 @@
         "id": "4022746cf8c24a90",
         "type": "change",
         "z": "c1424ba7df711ec6",
+        "g": "9f073f4918a13073",
         "name": "Available 4",
         "rules": [
             {
@@ -1471,6 +1732,7 @@
         "id": "b3afd6c7d3a7f3aa",
         "type": "change",
         "z": "c1424ba7df711ec6",
+        "g": "9f073f4918a13073",
         "name": "Door 4",
         "rules": [
             {
@@ -1493,10 +1755,11 @@
         "id": "ec505e2f89b8c7a4",
         "type": "ui_led",
         "z": "c1424ba7df711ec6",
-        "order": 5,
-        "group": "b7088b9626adbb54",
-        "width": 0,
-        "height": 0,
+        "g": "9f073f4918a13073",
+        "order": 3,
+        "group": "eba144a2d4e5303d",
+        "width": 10,
+        "height": 1,
         "label": "พร้อมใช้งาน",
         "colorForValue": [
             {
@@ -1522,10 +1785,11 @@
         "id": "b639528277b1b89f",
         "type": "ui_led",
         "z": "c1424ba7df711ec6",
-        "order": 5,
+        "g": "9f073f4918a13073",
+        "order": 2,
         "group": "dbbea13bc93f29be",
-        "width": 0,
-        "height": 0,
+        "width": 10,
+        "height": 1,
         "label": "พร้อมใช้งาน",
         "colorForValue": [
             {
@@ -1551,10 +1815,11 @@
         "id": "3a461afe886a9167",
         "type": "ui_led",
         "z": "c1424ba7df711ec6",
-        "order": 5,
-        "group": "76c2491ce4388d2f",
-        "width": 0,
-        "height": 0,
+        "g": "9f073f4918a13073",
+        "order": 2,
+        "group": "e45f975d941848c0",
+        "width": 10,
+        "height": 1,
         "label": "พร้อมใช้งาน",
         "colorForValue": [
             {
@@ -1580,10 +1845,11 @@
         "id": "d68b8824f926d82f",
         "type": "ui_led",
         "z": "c1424ba7df711ec6",
-        "order": 5,
+        "g": "9f073f4918a13073",
+        "order": 2,
         "group": "cc0172922ef5fd8b",
-        "width": 0,
-        "height": 0,
+        "width": 10,
+        "height": 1,
         "label": "พร้อมใช้งาน",
         "colorForValue": [
             {
@@ -1609,11 +1875,12 @@
         "id": "56475e954f321b0f",
         "type": "ui_gauge",
         "z": "c1424ba7df711ec6",
+        "g": "9f073f4918a13073",
         "name": "Gauge 1",
-        "group": "b7088b9626adbb54",
+        "group": "eba144a2d4e5303d",
         "order": 1,
-        "width": 6,
-        "height": 3,
+        "width": 10,
+        "height": 5,
         "gtype": "gage",
         "title": "ความจุ (mm)",
         "label": "mm",
@@ -1627,6 +1894,8 @@
         ],
         "seg1": 70,
         "seg2": 240,
+        "diff": false,
+        "className": "",
         "x": 3180,
         "y": 1420,
         "wires": []
@@ -1635,11 +1904,12 @@
         "id": "0b3143a258d904b4",
         "type": "ui_gauge",
         "z": "c1424ba7df711ec6",
+        "g": "9f073f4918a13073",
         "name": "Gauge 2",
         "group": "dbbea13bc93f29be",
         "order": 1,
-        "width": 6,
-        "height": 3,
+        "width": 10,
+        "height": 5,
         "gtype": "gage",
         "title": "ความจุ (mm)",
         "label": "mm",
@@ -1653,6 +1923,8 @@
         ],
         "seg1": 70,
         "seg2": 240,
+        "diff": false,
+        "className": "",
         "x": 3180,
         "y": 1460,
         "wires": []
@@ -1661,11 +1933,12 @@
         "id": "d0b712b1e2f29874",
         "type": "ui_gauge",
         "z": "c1424ba7df711ec6",
+        "g": "9f073f4918a13073",
         "name": "Gauge 3",
-        "group": "76c2491ce4388d2f",
+        "group": "e45f975d941848c0",
         "order": 1,
-        "width": 6,
-        "height": 3,
+        "width": 10,
+        "height": 5,
         "gtype": "gage",
         "title": "ความจุ (mm)",
         "label": "mm",
@@ -1679,6 +1952,8 @@
         ],
         "seg1": 70,
         "seg2": 240,
+        "diff": false,
+        "className": "",
         "x": 3180,
         "y": 1500,
         "wires": []
@@ -1687,11 +1962,12 @@
         "id": "9c74eac2ace06c1f",
         "type": "ui_gauge",
         "z": "c1424ba7df711ec6",
+        "g": "9f073f4918a13073",
         "name": "Gauge 4",
         "group": "cc0172922ef5fd8b",
         "order": 1,
-        "width": 6,
-        "height": 3,
+        "width": 10,
+        "height": 5,
         "gtype": "gage",
         "title": "ความจุ (mm)",
         "label": "mm",
@@ -1705,6 +1981,8 @@
         ],
         "seg1": 70,
         "seg2": 240,
+        "diff": false,
+        "className": "",
         "x": 3180,
         "y": 1540,
         "wires": []
@@ -1713,10 +1991,11 @@
         "id": "98916fb147754c07",
         "type": "ui_led",
         "z": "c1424ba7df711ec6",
-        "order": 6,
-        "group": "b7088b9626adbb54",
-        "width": 0,
-        "height": 0,
+        "g": "9f073f4918a13073",
+        "order": 2,
+        "group": "eba144a2d4e5303d",
+        "width": 10,
+        "height": 1,
         "label": "ประตู",
         "colorForValue": [
             {
@@ -1742,10 +2021,11 @@
         "id": "73e723b84026e6e7",
         "type": "ui_led",
         "z": "c1424ba7df711ec6",
-        "order": 6,
+        "g": "9f073f4918a13073",
+        "order": 3,
         "group": "dbbea13bc93f29be",
-        "width": 0,
-        "height": 0,
+        "width": 10,
+        "height": 1,
         "label": "ประตู",
         "colorForValue": [
             {
@@ -1771,10 +2051,11 @@
         "id": "ea9548c207e51f1d",
         "type": "ui_led",
         "z": "c1424ba7df711ec6",
-        "order": 6,
-        "group": "76c2491ce4388d2f",
-        "width": 0,
-        "height": 0,
+        "g": "9f073f4918a13073",
+        "order": 3,
+        "group": "e45f975d941848c0",
+        "width": 10,
+        "height": 1,
         "label": "ประตู",
         "colorForValue": [
             {
@@ -1800,10 +2081,11 @@
         "id": "7ba69793e5692503",
         "type": "ui_led",
         "z": "c1424ba7df711ec6",
-        "order": 6,
+        "g": "9f073f4918a13073",
+        "order": 3,
         "group": "cc0172922ef5fd8b",
-        "width": 0,
-        "height": 0,
+        "width": 10,
+        "height": 1,
         "label": "ประตู",
         "colorForValue": [
             {
@@ -1826,6 +2108,969 @@
         "wires": []
     },
     {
+        "id": "167190bdef261872",
+        "type": "mqtt in",
+        "z": "c1424ba7df711ec6",
+        "g": "1e7db22b699ea2fa",
+        "name": "Status C03",
+        "topic": "smartlocker/C03/slot/+/status",
+        "qos": "1",
+        "datatype": "json",
+        "broker": "0d5b4aa65b5c1506",
+        "nl": false,
+        "rap": true,
+        "rh": 0,
+        "inputs": 0,
+        "x": 1080,
+        "y": 1460,
+        "wires": [
+            [
+                "e1ee8a3a96cd228d"
+            ]
+        ]
+    },
+    {
+        "id": "e1ee8a3a96cd228d",
+        "type": "function",
+        "z": "c1424ba7df711ec6",
+        "g": "1e7db22b699ea2fa",
+        "name": "Split C01 Payload",
+        "func": "let slot = msg.topic.split(\"/\")[3];\nlet status = msg.payload;\nstatus.slot = slot;\nmsg.payload = status;\nmsg.slot = slot;\nreturn msg;",
+        "outputs": 1,
+        "timeout": "",
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 1270,
+        "y": 1460,
+        "wires": [
+            [
+                "4a4fe29489ebfb2d"
+            ]
+        ]
+    },
+    {
+        "id": "4a4fe29489ebfb2d",
+        "type": "switch",
+        "z": "c1424ba7df711ec6",
+        "g": "1e7db22b699ea2fa",
+        "name": "Split by Slot",
+        "property": "msg.slot",
+        "propertyType": "msg",
+        "rules": [
+            {
+                "t": "eq",
+                "v": "1",
+                "vt": "str"
+            },
+            {
+                "t": "eq",
+                "v": "2",
+                "vt": "str"
+            },
+            {
+                "t": "eq",
+                "v": "3",
+                "vt": "str"
+            },
+            {
+                "t": "eq",
+                "v": "4",
+                "vt": "str"
+            }
+        ],
+        "checkall": "true",
+        "repair": false,
+        "outputs": 4,
+        "x": 1480,
+        "y": 1460,
+        "wires": [
+            [
+                "aa441792835fc07f"
+            ],
+            [
+                "1c86a7c9e1d45110"
+            ],
+            [
+                "518066d71377127a"
+            ],
+            [
+                "d6942d4db765a963"
+            ]
+        ]
+    },
+    {
+        "id": "aa441792835fc07f",
+        "type": "function",
+        "z": "c1424ba7df711ec6",
+        "g": "1e7db22b699ea2fa",
+        "name": "Gauge Slot 1",
+        "func": "return {payload: msg.payload.capacity_mm};",
+        "outputs": 1,
+        "timeout": "",
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 1680,
+        "y": 1400,
+        "wires": [
+            [
+                "81ca48d153159dfe"
+            ]
+        ]
+    },
+    {
+        "id": "1c86a7c9e1d45110",
+        "type": "function",
+        "z": "c1424ba7df711ec6",
+        "g": "1e7db22b699ea2fa",
+        "name": "Gauge Slot 2",
+        "func": "return {payload: msg.payload.capacity_mm};",
+        "outputs": 1,
+        "timeout": "",
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 1670,
+        "y": 1440,
+        "wires": [
+            [
+                "37d2f95c245808cd"
+            ]
+        ]
+    },
+    {
+        "id": "518066d71377127a",
+        "type": "function",
+        "z": "c1424ba7df711ec6",
+        "g": "1e7db22b699ea2fa",
+        "name": "Gauge Slot 3",
+        "func": "return {payload: msg.payload.capacity_mm};",
+        "outputs": 1,
+        "timeout": "",
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 1680,
+        "y": 1480,
+        "wires": [
+            [
+                "9265c8889536d89b"
+            ]
+        ]
+    },
+    {
+        "id": "d6942d4db765a963",
+        "type": "function",
+        "z": "c1424ba7df711ec6",
+        "g": "1e7db22b699ea2fa",
+        "name": "Gauge Slot 4",
+        "func": "return {payload: msg.payload.capacity_mm};",
+        "outputs": 1,
+        "timeout": "",
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 1680,
+        "y": 1520,
+        "wires": [
+            [
+                "0b36eca342b01928"
+            ]
+        ]
+    },
+    {
+        "id": "88f3243c7fe48908",
+        "type": "mqtt in",
+        "z": "c1424ba7df711ec6",
+        "g": "1e7db22b699ea2fa",
+        "name": "MQTT Status C03",
+        "topic": "smartlocker/C03/slot/+/status",
+        "qos": "1",
+        "datatype": "json",
+        "broker": "0d5b4aa65b5c1506",
+        "nl": false,
+        "rap": false,
+        "inputs": 0,
+        "x": 1100,
+        "y": 1060,
+        "wires": [
+            [
+                "7f5164a707bab57f"
+            ]
+        ]
+    },
+    {
+        "id": "7f5164a707bab57f",
+        "type": "function",
+        "z": "c1424ba7df711ec6",
+        "g": "1e7db22b699ea2fa",
+        "name": "Parse Slot & Status",
+        "func": "const slot = msg.topic.split('/')[3];\nmsg.slot = slot;\nmsg.available = msg.payload.available;\nmsg.door = msg.payload.door_closed;\nreturn msg;",
+        "outputs": 1,
+        "timeout": "",
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 1300,
+        "y": 1060,
+        "wires": [
+            [
+                "992889bb69817a0b"
+            ]
+        ]
+    },
+    {
+        "id": "992889bb69817a0b",
+        "type": "switch",
+        "z": "c1424ba7df711ec6",
+        "g": "1e7db22b699ea2fa",
+        "name": "By Slot",
+        "property": "slot",
+        "propertyType": "msg",
+        "rules": [
+            {
+                "t": "eq",
+                "v": "1",
+                "vt": "str"
+            },
+            {
+                "t": "eq",
+                "v": "2",
+                "vt": "str"
+            },
+            {
+                "t": "eq",
+                "v": "3",
+                "vt": "str"
+            },
+            {
+                "t": "eq",
+                "v": "4",
+                "vt": "str"
+            }
+        ],
+        "checkall": "true",
+        "repair": false,
+        "outputs": 4,
+        "x": 1480,
+        "y": 1060,
+        "wires": [
+            [
+                "7ed8f632cfd441e2",
+                "1d6e4a9ccf5b5cf2"
+            ],
+            [
+                "72dd0bb8d63e6da0",
+                "1fb844d7b50d628d"
+            ],
+            [
+                "62ce0bc3f51b2410",
+                "bc5343e122801a51"
+            ],
+            [
+                "3690159ca771b1b9",
+                "501da68db39b4eed"
+            ]
+        ]
+    },
+    {
+        "id": "7ed8f632cfd441e2",
+        "type": "change",
+        "z": "c1424ba7df711ec6",
+        "g": "1e7db22b699ea2fa",
+        "name": "Available 1",
+        "rules": [
+            {
+                "t": "set",
+                "p": "payload",
+                "pt": "msg",
+                "to": "available",
+                "tot": "msg"
+            }
+        ],
+        "x": 1700,
+        "y": 1020,
+        "wires": [
+            [
+                "73bd790808a195f9"
+            ]
+        ]
+    },
+    {
+        "id": "1d6e4a9ccf5b5cf2",
+        "type": "change",
+        "z": "c1424ba7df711ec6",
+        "g": "1e7db22b699ea2fa",
+        "name": "Door 1",
+        "rules": [
+            {
+                "t": "set",
+                "p": "payload",
+                "pt": "msg",
+                "to": "door",
+                "tot": "msg"
+            }
+        ],
+        "x": 1700,
+        "y": 1060,
+        "wires": [
+            [
+                "72de8ae526bf9a36"
+            ]
+        ]
+    },
+    {
+        "id": "72dd0bb8d63e6da0",
+        "type": "change",
+        "z": "c1424ba7df711ec6",
+        "g": "1e7db22b699ea2fa",
+        "name": "Available 2",
+        "rules": [
+            {
+                "t": "set",
+                "p": "payload",
+                "pt": "msg",
+                "to": "available",
+                "tot": "msg"
+            }
+        ],
+        "x": 1700,
+        "y": 1100,
+        "wires": [
+            [
+                "b5cd1b1b61580c34"
+            ]
+        ]
+    },
+    {
+        "id": "1fb844d7b50d628d",
+        "type": "change",
+        "z": "c1424ba7df711ec6",
+        "g": "1e7db22b699ea2fa",
+        "name": "Door 2",
+        "rules": [
+            {
+                "t": "set",
+                "p": "payload",
+                "pt": "msg",
+                "to": "door",
+                "tot": "msg"
+            }
+        ],
+        "x": 1700,
+        "y": 1140,
+        "wires": [
+            [
+                "6f4035583ec3e71e"
+            ]
+        ]
+    },
+    {
+        "id": "62ce0bc3f51b2410",
+        "type": "change",
+        "z": "c1424ba7df711ec6",
+        "g": "1e7db22b699ea2fa",
+        "name": "Available 3",
+        "rules": [
+            {
+                "t": "set",
+                "p": "payload",
+                "pt": "msg",
+                "to": "available",
+                "tot": "msg"
+            }
+        ],
+        "x": 1700,
+        "y": 1180,
+        "wires": [
+            [
+                "4a5f7254e65ec768"
+            ]
+        ]
+    },
+    {
+        "id": "bc5343e122801a51",
+        "type": "change",
+        "z": "c1424ba7df711ec6",
+        "g": "1e7db22b699ea2fa",
+        "name": "Door 3",
+        "rules": [
+            {
+                "t": "set",
+                "p": "payload",
+                "pt": "msg",
+                "to": "door",
+                "tot": "msg"
+            }
+        ],
+        "x": 1700,
+        "y": 1220,
+        "wires": [
+            [
+                "29ca03393f71e301"
+            ]
+        ]
+    },
+    {
+        "id": "3690159ca771b1b9",
+        "type": "change",
+        "z": "c1424ba7df711ec6",
+        "g": "1e7db22b699ea2fa",
+        "name": "Available 4",
+        "rules": [
+            {
+                "t": "set",
+                "p": "payload",
+                "pt": "msg",
+                "to": "available",
+                "tot": "msg"
+            }
+        ],
+        "x": 1700,
+        "y": 1260,
+        "wires": [
+            [
+                "48d402d4f132463a"
+            ]
+        ]
+    },
+    {
+        "id": "501da68db39b4eed",
+        "type": "change",
+        "z": "c1424ba7df711ec6",
+        "g": "1e7db22b699ea2fa",
+        "name": "Door 4",
+        "rules": [
+            {
+                "t": "set",
+                "p": "payload",
+                "pt": "msg",
+                "to": "door",
+                "tot": "msg"
+            }
+        ],
+        "x": 1700,
+        "y": 1300,
+        "wires": [
+            [
+                "5fabbece1f96aee8"
+            ]
+        ]
+    },
+    {
+        "id": "73bd790808a195f9",
+        "type": "ui_led",
+        "z": "c1424ba7df711ec6",
+        "g": "1e7db22b699ea2fa",
+        "order": 2,
+        "group": "5d2f924af2ae6d88",
+        "width": 10,
+        "height": 1,
+        "label": "พร้อมใช้งาน",
+        "colorForValue": [
+            {
+                "color": "#ff0000",
+                "value": "false",
+                "valueType": "bool"
+            },
+            {
+                "color": "#008000",
+                "value": "true",
+                "valueType": "bool"
+            }
+        ],
+        "allowColorForValueInMessage": false,
+        "shape": "circle",
+        "showGlow": true,
+        "name": "Available LED 1",
+        "x": 1900,
+        "y": 1020,
+        "wires": []
+    },
+    {
+        "id": "b5cd1b1b61580c34",
+        "type": "ui_led",
+        "z": "c1424ba7df711ec6",
+        "g": "1e7db22b699ea2fa",
+        "order": 2,
+        "group": "605fa231ebf759ef",
+        "width": 10,
+        "height": 1,
+        "label": "พร้อมใช้งาน",
+        "colorForValue": [
+            {
+                "color": "#ff0000",
+                "value": "false",
+                "valueType": "bool"
+            },
+            {
+                "color": "#008000",
+                "value": "true",
+                "valueType": "bool"
+            }
+        ],
+        "allowColorForValueInMessage": false,
+        "shape": "circle",
+        "showGlow": true,
+        "name": "Available LED 2",
+        "x": 1900,
+        "y": 1100,
+        "wires": []
+    },
+    {
+        "id": "4a5f7254e65ec768",
+        "type": "ui_led",
+        "z": "c1424ba7df711ec6",
+        "g": "1e7db22b699ea2fa",
+        "order": 2,
+        "group": "76c2491ce4388d2f",
+        "width": 10,
+        "height": 1,
+        "label": "พร้อมใช้งาน",
+        "colorForValue": [
+            {
+                "color": "#ff0000",
+                "value": "false",
+                "valueType": "bool"
+            },
+            {
+                "color": "#008000",
+                "value": "true",
+                "valueType": "bool"
+            }
+        ],
+        "allowColorForValueInMessage": false,
+        "shape": "circle",
+        "showGlow": true,
+        "name": "Available LED 3",
+        "x": 1900,
+        "y": 1180,
+        "wires": []
+    },
+    {
+        "id": "48d402d4f132463a",
+        "type": "ui_led",
+        "z": "c1424ba7df711ec6",
+        "g": "1e7db22b699ea2fa",
+        "order": 2,
+        "group": "44168cf8815a3501",
+        "width": 10,
+        "height": 1,
+        "label": "พร้อมใช้งาน",
+        "colorForValue": [
+            {
+                "color": "#ff0000",
+                "value": "false",
+                "valueType": "bool"
+            },
+            {
+                "color": "#008000",
+                "value": "true",
+                "valueType": "bool"
+            }
+        ],
+        "allowColorForValueInMessage": false,
+        "shape": "circle",
+        "showGlow": true,
+        "name": "Available LED 4",
+        "x": 1900,
+        "y": 1260,
+        "wires": []
+    },
+    {
+        "id": "81ca48d153159dfe",
+        "type": "ui_gauge",
+        "z": "c1424ba7df711ec6",
+        "g": "1e7db22b699ea2fa",
+        "name": "Gauge 1",
+        "group": "5d2f924af2ae6d88",
+        "order": 1,
+        "width": 10,
+        "height": 5,
+        "gtype": "gage",
+        "title": "ความจุ (mm)",
+        "label": "mm",
+        "format": "{{value}}",
+        "min": 0,
+        "max": 300,
+        "colors": [
+            "#00b500",
+            "#e6e600",
+            "#ca3838"
+        ],
+        "seg1": 70,
+        "seg2": 240,
+        "diff": false,
+        "className": "",
+        "x": 1860,
+        "y": 1400,
+        "wires": []
+    },
+    {
+        "id": "37d2f95c245808cd",
+        "type": "ui_gauge",
+        "z": "c1424ba7df711ec6",
+        "g": "1e7db22b699ea2fa",
+        "name": "Gauge 2",
+        "group": "605fa231ebf759ef",
+        "order": 1,
+        "width": 10,
+        "height": 5,
+        "gtype": "gage",
+        "title": "ความจุ (mm)",
+        "label": "mm",
+        "format": "{{value}}",
+        "min": 0,
+        "max": 300,
+        "colors": [
+            "#00b500",
+            "#e6e600",
+            "#ca3838"
+        ],
+        "seg1": 70,
+        "seg2": 240,
+        "diff": false,
+        "className": "",
+        "x": 1860,
+        "y": 1440,
+        "wires": []
+    },
+    {
+        "id": "9265c8889536d89b",
+        "type": "ui_gauge",
+        "z": "c1424ba7df711ec6",
+        "g": "1e7db22b699ea2fa",
+        "name": "Gauge 3",
+        "group": "76c2491ce4388d2f",
+        "order": 1,
+        "width": 10,
+        "height": 5,
+        "gtype": "gage",
+        "title": "ความจุ (mm)",
+        "label": "mm",
+        "format": "{{value}}",
+        "min": 0,
+        "max": 300,
+        "colors": [
+            "#00b500",
+            "#e6e600",
+            "#ca3838"
+        ],
+        "seg1": 70,
+        "seg2": 240,
+        "diff": false,
+        "className": "",
+        "x": 1860,
+        "y": 1480,
+        "wires": []
+    },
+    {
+        "id": "0b36eca342b01928",
+        "type": "ui_gauge",
+        "z": "c1424ba7df711ec6",
+        "g": "1e7db22b699ea2fa",
+        "name": "Gauge 4",
+        "group": "44168cf8815a3501",
+        "order": 1,
+        "width": 10,
+        "height": 5,
+        "gtype": "gage",
+        "title": "ความจุ (mm)",
+        "label": "mm",
+        "format": "{{value}}",
+        "min": 0,
+        "max": 300,
+        "colors": [
+            "#00b500",
+            "#e6e600",
+            "#ca3838"
+        ],
+        "seg1": 70,
+        "seg2": 240,
+        "diff": false,
+        "className": "",
+        "x": 1860,
+        "y": 1520,
+        "wires": []
+    },
+    {
+        "id": "72de8ae526bf9a36",
+        "type": "ui_led",
+        "z": "c1424ba7df711ec6",
+        "g": "1e7db22b699ea2fa",
+        "order": 3,
+        "group": "5d2f924af2ae6d88",
+        "width": 10,
+        "height": 1,
+        "label": "ประตู",
+        "colorForValue": [
+            {
+                "color": "#ff0000",
+                "value": "false",
+                "valueType": "bool"
+            },
+            {
+                "color": "#008000",
+                "value": "true",
+                "valueType": "bool"
+            }
+        ],
+        "allowColorForValueInMessage": false,
+        "shape": "circle",
+        "showGlow": true,
+        "name": "Door LED 1",
+        "x": 1890,
+        "y": 1060,
+        "wires": []
+    },
+    {
+        "id": "6f4035583ec3e71e",
+        "type": "ui_led",
+        "z": "c1424ba7df711ec6",
+        "g": "1e7db22b699ea2fa",
+        "order": 3,
+        "group": "605fa231ebf759ef",
+        "width": 10,
+        "height": 1,
+        "label": "ประตู",
+        "colorForValue": [
+            {
+                "color": "#ff0000",
+                "value": "false",
+                "valueType": "bool"
+            },
+            {
+                "color": "#008000",
+                "value": "true",
+                "valueType": "bool"
+            }
+        ],
+        "allowColorForValueInMessage": false,
+        "shape": "circle",
+        "showGlow": true,
+        "name": "Door LED 2",
+        "x": 1890,
+        "y": 1140,
+        "wires": []
+    },
+    {
+        "id": "29ca03393f71e301",
+        "type": "ui_led",
+        "z": "c1424ba7df711ec6",
+        "g": "1e7db22b699ea2fa",
+        "order": 3,
+        "group": "76c2491ce4388d2f",
+        "width": 10,
+        "height": 1,
+        "label": "ประตู",
+        "colorForValue": [
+            {
+                "color": "#ff0000",
+                "value": "false",
+                "valueType": "bool"
+            },
+            {
+                "color": "#008000",
+                "value": "true",
+                "valueType": "bool"
+            }
+        ],
+        "allowColorForValueInMessage": false,
+        "shape": "circle",
+        "showGlow": true,
+        "name": "Door LED 3",
+        "x": 1890,
+        "y": 1220,
+        "wires": []
+    },
+    {
+        "id": "5fabbece1f96aee8",
+        "type": "ui_led",
+        "z": "c1424ba7df711ec6",
+        "g": "1e7db22b699ea2fa",
+        "order": 3,
+        "group": "44168cf8815a3501",
+        "width": 10,
+        "height": 1,
+        "label": "ประตู",
+        "colorForValue": [
+            {
+                "color": "#ff0000",
+                "value": "false",
+                "valueType": "bool"
+            },
+            {
+                "color": "#008000",
+                "value": "true",
+                "valueType": "bool"
+            }
+        ],
+        "allowColorForValueInMessage": false,
+        "shape": "circle",
+        "showGlow": true,
+        "name": "Door LED 4",
+        "x": 1890,
+        "y": 1300,
+        "wires": []
+    },
+    {
+        "id": "5c368575bf08b327",
+        "type": "ui_spacer",
+        "z": "c1424ba7df711ec6",
+        "name": "spacer",
+        "group": "2e8850357615d79c",
+        "order": 1,
+        "width": 30,
+        "height": 1
+    },
+    {
+        "id": "5e5d1a6eb64d8236",
+        "type": "ui_spacer",
+        "z": "c1424ba7df711ec6",
+        "name": "spacer",
+        "group": "2e8850357615d79c",
+        "order": 2,
+        "width": 30,
+        "height": 1
+    },
+    {
+        "id": "c718381a7c9466a0",
+        "type": "ui_spacer",
+        "z": "c1424ba7df711ec6",
+        "name": "spacer",
+        "group": "2e8850357615d79c",
+        "order": 3,
+        "width": 13,
+        "height": 1
+    },
+    {
+        "id": "8f7713c50177d8d5",
+        "type": "ui_spacer",
+        "z": "c1424ba7df711ec6",
+        "name": "spacer",
+        "group": "2e8850357615d79c",
+        "order": 5,
+        "width": 11,
+        "height": 1
+    },
+    {
+        "id": "f55c62498bad2498",
+        "type": "ui_spacer",
+        "z": "c1424ba7df711ec6",
+        "name": "spacer",
+        "group": "2e8850357615d79c",
+        "order": 6,
+        "width": 13,
+        "height": 1
+    },
+    {
+        "id": "de3e3f1bb9c8da52",
+        "type": "ui_spacer",
+        "z": "c1424ba7df711ec6",
+        "name": "spacer",
+        "group": "2e8850357615d79c",
+        "order": 8,
+        "width": 11,
+        "height": 1
+    },
+    {
+        "id": "e0a2eb49d0dfe0eb",
+        "type": "ui_spacer",
+        "z": "c1424ba7df711ec6",
+        "name": "spacer",
+        "group": "2e8850357615d79c",
+        "order": 9,
+        "width": 13,
+        "height": 1
+    },
+    {
+        "id": "4282bf17478c66d4",
+        "type": "ui_spacer",
+        "z": "c1424ba7df711ec6",
+        "name": "spacer",
+        "group": "2e8850357615d79c",
+        "order": 11,
+        "width": 11,
+        "height": 1
+    },
+    {
+        "id": "16a289e981bd1efb",
+        "type": "ui_spacer",
+        "z": "c1424ba7df711ec6",
+        "name": "spacer",
+        "group": "2e8850357615d79c",
+        "order": 12,
+        "width": 13,
+        "height": 1
+    },
+    {
+        "id": "a4cde20981bbe71e",
+        "type": "ui_spacer",
+        "z": "c1424ba7df711ec6",
+        "name": "spacer",
+        "group": "2e8850357615d79c",
+        "order": 14,
+        "width": 11,
+        "height": 1
+    },
+    {
+        "id": "e1993199eba68b73",
+        "type": "ui_spacer",
+        "z": "c1424ba7df711ec6",
+        "name": "spacer",
+        "group": "2e8850357615d79c",
+        "order": 15,
+        "width": 13,
+        "height": 1
+    },
+    {
+        "id": "83a67891731fb75b",
+        "type": "ui_spacer",
+        "z": "c1424ba7df711ec6",
+        "name": "spacer",
+        "group": "2e8850357615d79c",
+        "order": 17,
+        "width": 11,
+        "height": 1
+    },
+    {
+        "id": "ec1a633d01c70996",
+        "type": "ui_spacer",
+        "z": "c1424ba7df711ec6",
+        "name": "spacer",
+        "group": "",
+        "order": 2,
+        "width": 4,
+        "height": 1
+    },
+    {
+        "id": "faa26d76ca199f1f",
+        "type": "ui_spacer",
+        "z": "c1424ba7df711ec6",
+        "name": "spacer",
+        "group": "",
+        "order": 3,
+        "width": 4,
+        "height": 1
+    },
+    {
+        "id": "a8a2dbc3433bd2fd",
+        "type": "ui_spacer",
+        "z": "c1424ba7df711ec6",
+        "name": "spacer",
+        "group": "",
+        "order": 4,
+        "width": 4,
+        "height": 1
+    },
+    {
         "id": "2e8850357615d79c",
         "type": "ui_group",
         "name": "index",
@@ -1837,27 +3082,32 @@
         "className": ""
     },
     {
-        "id": "mqtt_broker",
+        "id": "0d5b4aa65b5c1506",
         "type": "mqtt-broker",
-        "name": "Local Mosquitto",
-        "broker": "localhost",
-        "port": "1883",
+        "name": "HiveMQ Cloud Project",
+        "broker": "ee38d9fe513a4afb8bb50ae73c6adc3a.s1.eu.hivemq.cloud",
+        "port": "8883",
+        "tls": "e5af789198c9d143",
         "clientid": "",
         "autoConnect": true,
-        "usetls": false,
-        "protocolVersion": "4",
-        "keepalive": "60",
+        "usetls": true,
+        "protocolVersion": 4,
+        "keepalive": 60,
         "cleansession": true,
         "autoUnsubscribe": true,
         "birthTopic": "",
         "birthQos": "0",
+        "birthRetain": "false",
         "birthPayload": "",
         "birthMsg": {},
         "closeTopic": "",
+        "closeQos": "0",
+        "closeRetain": "false",
         "closePayload": "",
         "closeMsg": {},
         "willTopic": "",
         "willQos": "0",
+        "willRetain": "false",
         "willPayload": "",
         "willMsg": {},
         "userProps": "",
@@ -1904,14 +3154,15 @@
         "collapse": false
     },
     {
-        "id": "b7088b9626adbb54",
+        "id": "eba144a2d4e5303d",
         "type": "ui_group",
         "name": "Slot 1",
         "tab": "tab_c02",
         "order": 1,
         "disp": true,
         "width": 10,
-        "collapse": false
+        "collapse": false,
+        "className": ""
     },
     {
         "id": "dbbea13bc93f29be",
@@ -1924,14 +3175,15 @@
         "collapse": false
     },
     {
-        "id": "76c2491ce4388d2f",
+        "id": "e45f975d941848c0",
         "type": "ui_group",
         "name": "Slot 3",
         "tab": "tab_c02",
         "order": 3,
         "disp": true,
         "width": 10,
-        "collapse": false
+        "collapse": false,
+        "className": ""
     },
     {
         "id": "cc0172922ef5fd8b",
@@ -1944,11 +3196,69 @@
         "collapse": false
     },
     {
+        "id": "5d2f924af2ae6d88",
+        "type": "ui_group",
+        "name": "Slot 1",
+        "tab": "ed11fab521547e5d",
+        "order": 1,
+        "disp": true,
+        "width": 10,
+        "collapse": false,
+        "className": ""
+    },
+    {
+        "id": "605fa231ebf759ef",
+        "type": "ui_group",
+        "name": "Slot 2",
+        "tab": "ed11fab521547e5d",
+        "order": 2,
+        "disp": true,
+        "width": 10,
+        "collapse": false,
+        "className": ""
+    },
+    {
+        "id": "76c2491ce4388d2f",
+        "type": "ui_group",
+        "name": "Slot 3",
+        "tab": "ed11fab521547e5d",
+        "order": 3,
+        "disp": true,
+        "width": 10,
+        "collapse": false,
+        "className": ""
+    },
+    {
+        "id": "44168cf8815a3501",
+        "type": "ui_group",
+        "name": "Slot 4",
+        "tab": "ed11fab521547e5d",
+        "order": 4,
+        "disp": true,
+        "width": 10,
+        "collapse": false,
+        "className": ""
+    },
+    {
         "id": "ui_tab_control",
         "type": "ui_tab",
         "name": "Control",
         "icon": "dashboard",
         "order": 1
+    },
+    {
+        "id": "e5af789198c9d143",
+        "type": "tls-config",
+        "name": "HiveMQ TLS",
+        "cert": "",
+        "key": "",
+        "ca": "",
+        "certname": "",
+        "keyname": "",
+        "caname": "",
+        "servername": "ee38d9fe513a4afb8bb50ae73c6adc3a.s1.eu.hivemq.cloud",
+        "verifyservercert": true,
+        "alpnprotocol": ""
     },
     {
         "id": "tab_c01",
@@ -1967,7 +3277,15 @@
         "hidden": false
     },
     {
-        "id": "c2eb6e04ad784890",
+        "id": "ed11fab521547e5d",
+        "type": "ui_tab",
+        "name": "Node C03",
+        "icon": "storage",
+        "disabled": false,
+        "hidden": false
+    },
+    {
+        "id": "c7c9386eef2b5a6e",
         "type": "global-config",
         "env": [],
         "modules": {
