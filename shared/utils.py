@@ -54,17 +54,27 @@ def publish_mqtt(
                 client.username_pw_set(username=username, password=password)
 
             if tls:
+                # NEW: ถ้าระบุ MQTT_CA แต่ไฟล์ไม่อยู่ ให้ fallback เป็น default context
+                use_default_ctx = True
                 if ca_certs:
-                    client.tls_set(
-                        ca_certs=ca_certs,
-                        certfile=None,
-                        keyfile=None,
-                        tls_version=ssl.PROTOCOL_TLS_CLIENT,
-                    )
-                else:
+                    try:
+                        if not os.path.isfile(ca_certs):
+                            raise FileNotFoundError(ca_certs)
+                        client.tls_set(
+                            ca_certs=ca_certs,
+                            certfile=None,
+                            keyfile=None,
+                            tls_version=ssl.PROTOCOL_TLS_CLIENT,
+                        )
+                        use_default_ctx = False
+                    except Exception as _e:
+                        print(f"[!] MQTT_CA invalid: {ca_certs} ({_e}) -> fallback to system CA")
+
+                if use_default_ctx:
                     client.tls_set_context(ssl.create_default_context())
+
                 client.tls_insecure_set(False)
-                if port == 1883:   # เผื่อผู้ใช้ยังไม่ได้ตั้งพอร์ต TLS
+                if port == 1883:
                     port = 8883
 
             client.connect(broker, port, keepalive=60)

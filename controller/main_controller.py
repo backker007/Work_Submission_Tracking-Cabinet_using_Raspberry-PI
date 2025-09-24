@@ -1,152 +1,56 @@
-# ✅ controller/main_controller.py
-# SmartLocker Controller รองรับ Multi-Node + คิวคำสั่ง + ทำงานร่วมกับ helpers
-
-import sys
-import os
-import time
-import json
-import threading
-import queue
+# controller/main_controller.py
+from __future__ import annotations
+import os, sys, json, time, threading, queue, ssl
 from pathlib import Path
 
-# ---- Project root to sys.path ----
+# --- Path & .env ---
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-
-# ---- Load .env ----
 from dotenv import load_dotenv
 ROOT = Path(__file__).resolve().parents[1]
 load_dotenv(ROOT / ".env")
 
-# (debug) แสดงคอนฟิก MQTT ที่อ่านได้
-print(
-    "[MQTT cfg]",
-    os.getenv("MQTT_HOST"),
-    os.getenv("MQTT_PORT"),
-    "TLS=" + str(os.getenv("MQTT_TLS")),
-    "USER=" + str(os.getenv("MQTT_USERNAME")),
+# --- MQTT client ---
+import paho.mqtt.client as mqtt
+
+# --- Project helpers (จัดการ MQTT topics + publish รวมศูนย์ที่นี่) ---
+from shared.topics import (
+    CUPBOARDS_ID, SLOT_IDS, SLOT_TO_INDEX, INDEX_TO_SLOT,
+    get_subscriptions, publish_status, publish_warning,
 )
 
-# ---- Imports from shared modules ----
-from shared.mqtt_helpers import (
-    publish_status,
-    publish_warning,
-    get_command_subscriptions,
-)
+# --- Hardware helpers  ---
 from shared.hardware_helpers import (
-    init_mcp,
-    init_xshuts,
-    reset_vl53_addresses,
-    init_sensors,
-    read_sensor,
-    move_servo_180,
-    is_door_reliably_closed,
-    vl53_sensors,
-    mcp_pins,
-    relay_pins,
-    CHANGE_THRESHOLD,  # threshold การเปลี่ยนแปลงระยะ (mm)
+    init_mcp, init_xshuts, reset_vl53_addresses, init_sensors,
+    read_sensor, move_servo_180, is_door_reliably_closed,
+    vl53_sensors, mcp_pins, relay_pins, CHANGE_THRESHOLD,
 )
-from shared.role_helpers import can_insert, can_unlock, is_valid_role
 
-# ==== CONFIG ====
-NODE_ID = os.getenv("NODE_ID", "C01")
-CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", "120"))
-ZERO_THRESHOLD = int(os.getenv("ZERO_THRESHOLD", "70"))  # >70mm ถือว่ายังว่าง (ปรับตามจริง)
+# --- Role helpers  ---
+from shared.role_helpers import can_intake, can_removal, is_valid_role
 
-# สถานะช่อง (0..3)
-slot_status = [{"capacity_mm": 0, "available": True, "door_closed": True} for _ in range(4)]
+# ===== CONFIG =====
+ZERO_THRESHOLD = int(os.getenv("ZERO_THRESHOLD", "70"))  # >70mm = ว่าง
 
-# ตัวกันซ้อนงานระดับระบบ (ถ้าต้องการกันต่อช่อง เปลี่ยนเป็น busy[4] ได้)
+# ===== Global State =====
+slot_status = [{"capacity_mm": 0, "available": True, "door_closed": True} for _ in SLOT_IDS]
+cmd_q: "queue.Queue[tuple[str,str,str]]" = queue.Queue()   # (action, slot_id, role)
 reading_active = False
+selected_sensor_index: int | None = None
+user_role: str | None = None
 
-# role และ index ล่าสุด (debug/อ้างอิง)
-selected_sensor_index = None
-user_role = None
+# ===== MQTT helpers for idx =====
+def publish_status_idx(idx: int):
+    sid = INDEX_TO_SLOT[idx]
+    publish_status(sid, slot_status[idx])
 
-# คิวคำสั่งจาก MQTT → worker
-cmd_q = queue.Queue()
+def publish_warning_idx(idx: int, message: str):
+    sid = INDEX_TO_SLOT[idx]
+    publish_warning(sid, message)
 
-
-# ==== MAIN LOOP ====
-def main():
-    # Init hardware
-    init_mcp()
-    init_xshuts()
-    reset_vl53_addresses()
-    init_sensors()
-
-    # Initial status broadcast
-    for i in range(len(slot_status)):
-        slot_status[i] = {"capacity_mm": 240 + i, "available": True, "door_closed": True}
-        publish_status_slot(i)
-        time.sleep(0.1)
-
-    # Start MQTT
-    client = _build_mqtt_client()
-    client.loop_start()
-
-    # Start command worker (สำคัญ: ต้องเป็น thread, ห้ามเรียกฟังก์ชันตรง!)
-    threading.Thread(target=command_worker, daemon=True).start()
-
-    last_check = time.time()
-
-    try:
-        while True:
-            # เช็คไฟ/LED ทุก ๆ CHECK_INTERVAL
-            if time.time() - last_check >= CHECK_INTERVAL:
-                for i in range(len(vl53_sensors)):
-                    value = read_sensor(i)
-
-                    # NOTE: ตรวจ mapping ของบอร์ดคุณให้ถูก
-                    green = mcp_pins[i]        # สมมติ LED เขียว
-                    red = mcp_pins[8 + i]      # สมมติ LED แดง
-                    # หลีกเลี่ยงการไปยุ่ง input ของสวิตช์ประตู
-
-                    if value == -1:           # อ่านไม่ได้/ชิดเกินไป
-                        green.value = False
-                        red.value = True
-                    elif value == 0:          # (ปรับตามโปรเจกต์ของคุณ)
-                        green.value = True
-                        red.value = False
-                    else:
-                        green.value = False
-                        red.value = True
-
-                last_check = time.time()
-
-            time.sleep(0.1)
-    except KeyboardInterrupt:
-        print("\n🛑 หยุดการทำงาน")
-    finally:
-        try:
-            client.loop_stop()
-            client.disconnect()
-        except Exception:
-            pass
-
-
-# ==== MQTT STATUS WRAPPER ====
-def publish_status_slot(index: int):
-    """ส่งสถานะของช่อง index (0-based) ออก MQTT"""
-    publish_status(NODE_ID, index + 1, slot_status[index])
-
-
-def publish_warning_slot(index: int, message: str = None):
-    """ส่งคำเตือนของช่อง index (0-based) ออก MQTT"""
-    publish_warning(
-        NODE_ID,
-        index + 1,
-        message or "ประตูยังไม่ปิดสนิทหลังการเปิดใช้งาน",
-    )
-
-
-# ==== STORAGE COMPARTMENT STATE MACHINE (ใส่เอกสาร) ====
+# ===== STORAGE COMPARTMENT STATE MACHINE (ใส่เอกสาร) =====
 def Storage_compartment(index: int):
-    """
-    เปิด servo → รอผู้ใช้ 'ใส่ของ' → เฝ้าการขยับจนเงียบ → ปิด servo → อ่านค่า/ประกาศสถานะ
-    (logic ตามที่คุณยืนยันแล้ว)
-    """
+    """เปิด servo → รอผู้ใช้ 'ใส่ของ' → เฝ้าการขยับจนเงียบ → ปิด servo → อ่านค่า/ประกาศสถานะ"""
     global reading_active
-
     STATE_WAIT_INSERT = "wait_insert"
     STATE_MONITOR_MOVEMENT = "monitor_movement"
     STATE_CLOSE_SERVO = "close_servo"
@@ -154,7 +58,7 @@ def Storage_compartment(index: int):
 
     try:
         move_servo_180(index, 180)
-        print(f"🔄 เปิดมอเตอร์ช่อง {index + 1} (→ 180°)")
+        print(f"🔄 เปิดมอเตอร์ช่อง {INDEX_TO_SLOT[index]} (→ 180°)")
 
         # อ่านค่าเริ่มต้น (มี timeout)
         initial = -1
@@ -172,7 +76,7 @@ def Storage_compartment(index: int):
                 timeout = time.time() + 10
                 while time.time() < timeout:
                     current = read_sensor(index)
-                    print(f"⏳ รอการใส่ของ... S{index + 1}: {current:.1f} mm")
+                    print(f"⏳ รอการใส่ของ... {INDEX_TO_SLOT[index]}: {current:.1f} mm")
                     if current > 0 and current < initial - CHANGE_THRESHOLD:
                         print("📦 ตรวจพบการใส่ของครั้งแรก")
                         state = STATE_MONITOR_MOVEMENT
@@ -189,7 +93,7 @@ def Storage_compartment(index: int):
 
                 while True:
                     current = read_sensor(index)
-                    print(f"🚱 S{index + 1}: {current:.1f} mm")
+                    print(f"🚱 {INDEX_TO_SLOT[index]}: {current:.1f} mm")
                     if abs(current - last_distance) >= CHANGE_THRESHOLD:
                         print("🔍 พบการขยับ → รีเซ็ตตัวจับเวลา")
                         last_motion_time = time.time()
@@ -202,7 +106,7 @@ def Storage_compartment(index: int):
                 state = STATE_CLOSE_SERVO
 
             elif state == STATE_CLOSE_SERVO:
-                print(f"🔒 ปิดมอเตอร์ช่อง {index + 1} (← 0°)")
+                print(f"🔒 ปิดมอเตอร์ช่อง {INDEX_TO_SLOT[index]} (← 0°)")
                 move_servo_180(index, 0)
                 capacity = read_sensor(index)
                 sensor_exists = index < len(vl53_sensors)
@@ -214,17 +118,16 @@ def Storage_compartment(index: int):
                         "door_closed": True,
                     }
                 )
-                publish_status_slot(index)
+                publish_status_idx(index)
                 state = STATE_DONE
 
-        print(f"✅ ช่อง {index + 1}: ปิด servo แล้ว")
+        print(f"✅ ช่อง {INDEX_TO_SLOT[index]}: ปิด servo แล้ว")
     except Exception as e:
-        print(f"[ERR] Storage_compartment({index}): {e}")
+        print(f"[ERR] Storage_compartment({INDEX_TO_SLOT[index]}): {e}")
     finally:
         reading_active = False
 
-
-# ==== DOOR UNLOCK SEQUENCE (เอาเอกสารออก) ====
+# ===== DOOR UNLOCK SEQUENCE (เอาเอกสารออก) =====
 def handle_door_unlock(index: int):
     """
     ปลดล็อก (relay ON) → รอผู้ใช้เปิดประตู → เฝ้าการนำออก + เตือนทุก 10 วิถ้ายังไม่ปิด
@@ -244,23 +147,21 @@ def handle_door_unlock(index: int):
     try:
         # ปลดล็อก (จ่ายไฟให้โซลินอยด์)
         relay_pins[index].value = True
-        print(f"🔓 เปิดประตูช่อง {index + 1} (Relay ON)")
+        print(f"🔓 เปิดประตูช่อง {INDEX_TO_SLOT[index]} (Relay ON)")
 
         # รอให้ "เปิดประตูจริง" ภายใน 10 วิ
         wait_start = time.time()
         while time.time() - wait_start <= TIME_WAIT_OPEN_DOOR:
             if not is_door_reliably_closed(index):
                 print("✅ ประตูถูกเปิดแล้ว")
+                publish_warning_idx(index, "ประตูถูกเปิดแล้ว")
                 break
             print("⏳ ยังไม่มีการเปิดประตู...")
             time.sleep(SENSOR_CHECK_INTERVAL)
         else:
             print("⚠️ ครบเวลาแต่ยังไม่เปิดประตู → ล็อกกลับทันที")
             relay_pins[index].value = False
-            publish_warning_slot(
-                index,
-                "ได้รับคำสั่งปลดล็อก แต่ไม่มีการเปิดประตูภายในเวลาที่กำหนด ระบบได้ทำการล็อกกลับโดยอัตโนมัติ",
-            )
+            publish_warning_idx(index, "ได้รับคำสั่งปลดล็อก แต่ไม่มีการเปิดประตูภายในเวลาที่กำหนด ระบบได้ทำการล็อกกลับโดยอัตโนมัติ")
             return
 
         # เฝ้าดูการนำเอกสารออก + เตือนทุก 10 วิ หากประตูยังไม่ปิด
@@ -290,7 +191,7 @@ def handle_door_unlock(index: int):
             if time.time() - extract_start > MOTION_TIMEOUT:
                 if not motion_detected:
                     print("⚠️ เปิดประตูแล้วแต่ไม่พบการขยับเลย → แจ้งเตือน")
-                    publish_warning_slot(index, "เปิดประตูแล้วแต่ไม่พบการขยับของเลย")
+                    publish_warning_idx(index, "เปิดประตูแล้วแต่ไม่พบการขยับของเลย")
                 print("⏳ หมดเวลานำออก → เข้าสู่โหมดรอปิดประตู")
                 break
 
@@ -298,7 +199,7 @@ def handle_door_unlock(index: int):
             if time.time() - last_motion_time > MOTION_INACTIVE_BEFORE_WARN:
                 if not is_door_reliably_closed(index) and time.time() - last_warning_time > TIME_REPEAT_WARNING:
                     print("⚠️ ไม่มีการเคลื่อนไหว และประตูยังไม่ปิด → แจ้งเตือนซ้ำ")
-                    publish_warning_slot(index, "กรุณาปิดประตูให้สนิทเพื่อทำการล็อก")
+                    publish_warning_idx(index, "กรุณาปิดประตูให้สนิทเพื่อทำการล็อก")
                     last_warning_time = time.time()
 
             time.sleep(SENSOR_CHECK_INTERVAL)
@@ -308,20 +209,20 @@ def handle_door_unlock(index: int):
         while not is_door_reliably_closed(index):
             # เตือนซ้ำทุก 10 วิ ถ้ายังไม่ปิด
             if time.time() - last_warning_time > TIME_REPEAT_WARNING:
-                publish_warning_slot(index, "ประตูยังไม่ปิดสนิท กรุณาปิดให้สนิทเพื่อทำการล็อก")
+                publish_warning_idx(index, "ประตูยังไม่ปิดสนิท กรุณาปิดให้สนิทเพื่อทำการล็อก")
                 last_warning_time = time.time()
             time.sleep(SENSOR_CHECK_INTERVAL)
         time.sleep(SENSOR_STABLE_DURATION)
 
         # สั่ง "ล็อก" (ตัดไฟโซลินอยด์)
         relay_pins[index].value = False
-        print(f"🔐 ล็อกประตูช่อง {index + 1} (Relay OFF)")
+        print(f"🔐 ล็อกประตูช่อง {INDEX_TO_SLOT[index]} (Relay OFF)")
 
         # ความปลอดภัย: ตรวจซ้ำว่าปิดจริง
         time.sleep(0.5)
         if not is_door_reliably_closed(index):
             print("⚠️ ตรวจพบว่าประตูยังไม่ปิดสนิทหลังล็อก → แจ้งเตือน")
-            publish_warning_slot(index, "ระบบพยายามล็อกแล้ว แต่ประตูยังไม่ปิดสนิท")
+            publish_warning_idx(index, "ระบบพยายามล็อกแล้ว แต่ประตูยังไม่ปิดสนิท")
             return
 
         # รอค่าวัดนิ่ง แล้วค่อยส่งสถานะ
@@ -336,162 +237,145 @@ def handle_door_unlock(index: int):
             else:
                 stable_start = time.time()
                 stable_value = current
-            time.sleep(SENSOR_CHECK_INTERVAL)
+            time.sleep(0.2)
 
         new_value = read_sensor(index)
         slot_status[index]["capacity_mm"] = new_value
         slot_status[index]["door_closed"] = True
         slot_status[index]["available"] = new_value > ZERO_THRESHOLD
-        publish_status_slot(index)
+        publish_status_idx(index)
 
     except Exception as e:
-        print(f"[ERR] handle_door_unlock({index}): {e}")
+        print(f"[ERR] handle_door_unlock({INDEX_TO_SLOT[index]}): {e}")
     finally:
         reading_active = False
 
-
-# alias ให้โค้ดเก่าที่อาจเรียกชื่อเดิม
+# === alias เพื่อความเข้ากันได้กับโค้ดเก่า ===
 run_state_machine = Storage_compartment
 
-
-# ==== MQTT LISTENER (เบาและเร็ว: โยนคิวอย่างเดียว) ====
+# ===== MQTT LISTENER (เบา: โยนเข้าคิว) =====
 def on_message(client, userdata, msg):
     try:
-        topic = msg.topic
-        payload = msg.payload.decode("utf-8") if msg.payload else "{}"
-        data = {}
-        try:
-            data = json.loads(payload) if payload else {}
-        except Exception:
-            pass
+        parts = msg.topic.split("/")  # smartlocker/{node}/slot/SC00+{slot_id}/command/{action}
+        if len(parts) < 6 or parts[0] != "smartlocker":
+            return
+        node, slot_id, action = parts[1], parts[3], parts[5]
+        data = json.loads(msg.payload.decode("utf-8") or "{}") if msg.payload else {}
+        role = str(data.get("role", "student")).lower()
 
-        # topic format: smartlocker/{NODE}/slot/{N}/command/{kind}
-        parts = topic.split("/")
-        if len(parts) >= 6 and parts[0] == "smartlocker":
-            node = parts[1]
-            slot = int(parts[3])  # 1-based
-            kind = parts[5]       # "open" | "unlock"
-            role = data.get("role", "student")
+        if slot_id not in SLOT_TO_INDEX:
+            print(f"❌ Unknown slot_id: {slot_id}")
+            return
 
-            if not is_valid_role(role):
-                print(f"❌ Invalid role: {role}")
-                return
+        # เช็คสิทธิ์แบบง่าย
+        if not is_valid_role(role):
+            print(f"❌ Invalid role: {role}")
+            return
+        if action == "intake" and not can_intake(role):
+            print(f"🚫 role '{role}' ไม่มีสิทธิ์ {action}")
+            return
+        if action == "removal" and not can_removal(role):
+            print(f"🚫 role '{role}' ไม่มีสิทธิ์ {action}")
+            return
 
-            # ตรวจสิทธิ์ตาม kind
-            if kind == "open" and not can_insert(role):
-                print(f"🚫 role '{role}' ไม่มีสิทธิ์ {kind}")
-                return
-            if kind == "unlock" and not can_unlock(role):
-                print(f"🚫 role '{role}' ไม่มีสิทธิ์ {kind}")
-                return
-
-            # โยนงานเข้า queue (ไม่ทำงานยาวใน callback)
-            cmd_q.put((kind, node, slot, role))
-            print(f"[ENQUEUE] {kind} node={node} slot={slot} role={role}")
-        else:
-            print(f"[MQTT] skip topic: {topic}")
+        cmd_q.put((action, slot_id, role))
+        print(f"[ENQUEUE] {action} {slot_id} by {role}")
     except Exception as e:
-        print(f"[on_message ERR] {e}")
+        print("[on_message ERR]", e)
 
+# ===== MQTT CONNECTOR =====
+def on_connect(c, u, f, rc, props=None):
+    for t in get_subscriptions(broad=True):  # บริหารง่ายสุด: สมัครกว้าง
+        c.subscribe(t, qos=1)
+        print("[MQTT] Subscribed:", t)
 
-# ==== MQTT CONNECTOR (Subscriber) ====
-def _build_mqtt_client():
-    import ssl
-    import paho.mqtt.client as mqtt
-
+def build_client():
     host = os.getenv("MQTT_HOST", "localhost")
     port = int(os.getenv("MQTT_PORT", "1883"))
-    username = os.getenv("MQTT_USERNAME")
-    password = os.getenv("MQTT_PASSWORD")
+    user = os.getenv("MQTT_USERNAME")
+    pw = os.getenv("MQTT_PASSWORD")
     use_tls = bool(int(os.getenv("MQTT_TLS", "0")))
-    use_ws = bool(int(os.getenv("MQTT_WS", "0")))
+    ws = bool(int(os.getenv("MQTT_WS", "0")))
     client_id = os.getenv("MQTT_CLIENT_ID")
-    ca_path = os.getenv("MQTT_CA")  # optional
+    ca = os.getenv("MQTT_CA") or None
 
     client = mqtt.Client(
         callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
         client_id=client_id,
-        transport="websockets" if use_ws else "tcp",
+        transport="websockets" if ws else "tcp",
         protocol=mqtt.MQTTv311,
     )
-
-    if username:
-        client.username_pw_set(username=username, password=password)
-
-    if use_ws:
-        # สำคัญสำหรับ HiveMQ Cloud (WebSocket path)
-        try:
-            client.ws_set_options(path="/mqtt")
-        except Exception:
-            pass
-
+    if user:
+        client.username_pw_set(user, pw)
+    if ws:
+        try: client.ws_set_options(path="/mqtt")
+        except: pass
     if use_tls:
-        if ca_path:
-            client.tls_set(ca_certs=ca_path, tls_version=ssl.PROTOCOL_TLS_CLIENT)
+        if ca:
+            client.tls_set(ca_certs=ca, tls_version=ssl.PROTOCOL_TLS_CLIENT)
         else:
-            import ssl as _ssl
-            client.tls_set_context(_ssl.create_default_context())
+            client.tls_set_context(ssl.create_default_context())
         client.tls_insecure_set(False)
-        if port == 1883:
-            port = 8883  # default TLS port ifไม่ระบุ
+        if port == 1883: port = 8883
 
+    client.on_connect = on_connect
     client.on_message = on_message
-
-    # resubscribe เมื่อ reconnect
-    def _on_connect(_c, _u, _f, rc, props=None):
-        topics = list(get_command_subscriptions())
-        for t in topics:
-            _c.subscribe(t)
-            print(f"[MQTT] Subscribed: {t}")
-    client.on_connect = _on_connect
-
-    # ตั้ง backoff reconnect
-    try:
-        client.reconnect_delay_set(min_delay=1, max_delay=16)
-    except Exception:
-        pass
-
+    client.reconnect_delay_set(min_delay=1, max_delay=16)
     client.connect(host, port, keepalive=60)
     return client
 
+# ===== MAIN =====
+def main():
+    # Init hardware (จากเวอร์ชันแรก)
+    init_mcp()
+    init_xshuts()
+    reset_vl53_addresses()
+    init_sensors()
 
-# ==== WORKER THREAD ====
-def command_worker():
+    # Initial status broadcast
+    for i, sid in enumerate(SLOT_IDS):
+        slot_status[i] = {"capacity_mm": 200 + i, "available": True, "door_closed": True}
+        publish_status(sid, slot_status[i])
+        time.sleep(0.05)
+
+    # Start worker
+    threading.Thread(target=worker, daemon=True).start()
+
+    # Start MQTT loop (จัดการง่าย)
+    client = build_client()
+    client.loop_forever()
+
+# ===== WORKER THREAD =====
+def worker():
+    global reading_active, selected_sensor_index, user_role
     while True:
+        action, slot_id, role = cmd_q.get()
         try:
-            kind, node, slot, role = cmd_q.get()
-            global reading_active, selected_sensor_index, user_role
-
-            # กันซ้อนทั้งระบบ; ถ้าต้องการทีละช่อง ใช้ busy[slot-1] แทน
             if reading_active:
-                print("⚠️ กำลังมีการทำงานอยู่ รอให้เสร็จก่อน")
+                publish_warning(slot_id, "ระบบกำลังทำงานอยู่ โปรดลองใหม่อีกครั้ง")
+                continue
+            if slot_id not in SLOT_TO_INDEX:
+                publish_warning(slot_id, f"ไม่รู้จัก slot_id: {slot_id}")
                 continue
 
-            selected_sensor_index = slot - 1
+            idx = SLOT_TO_INDEX[slot_id]
+            selected_sensor_index = idx
             user_role = role
             reading_active = True
 
             try:
-                if kind == "open":
-                    Storage_compartment(slot - 1)  # index ภายในเริ่ม 0
-                elif kind == "unlock":
-                    handle_door_unlock(slot - 1)
+                if action == "intake":
+                    Storage_compartment(idx)
+                elif action == "removal":
+                    handle_door_unlock(idx)
                 else:
-                    print(f"❓ ไม่รู้จักคำสั่ง: {kind}")
+                    publish_warning(slot_id, f"ไม่รู้จักคำสั่ง: {action}")
             finally:
-                # NOTE: ทั้งสองฟังก์ชันก็มี finally เคลียร์อยู่แล้ว
                 reading_active = False
-
         except Exception as e:
-            print(f"[ERR] worker: {e}")
+            publish_warning(slot_id, "เกิดข้อผิดพลาด", extra={"detail": str(e)})
         finally:
-            try:
-                cmd_q.task_done()
-            except Exception:
-                pass
-
-
-
+            cmd_q.task_done()
 
 if __name__ == "__main__":
     main()

@@ -5,20 +5,18 @@
 def is_admin(role):
     return role == "admin"
 
-def is_professor(role):
-    return role == "professor"
+def is_teachers(role):
+    return role == "teachers"
 
 def is_student(role):
     return role == "student"
 
-# ==== Permission Logic ====
-def can_unlock(role):
-    """สามารถปลดล็อกประตู (relay) ได้"""
-    return role in ["admin", "professor"]
+def is_valid_role(role: str) -> bool:
+    return role in ("admin", "teachers", "student")
 
-def can_insert(role):
-    """สามารถเปิดช่องใส่เอกสารได้"""
-    return role in ["admin", "professor", "student"]
+def can_intake(role: str) -> bool:
+    return role in ("admin", "teachers", "student")
 
-def is_valid_role(role):
-    return role in ["admin", "professor", "student"]
+def can_removal(role: str) -> bool:
+    # ถ้าต้องการให้เฉพาะ admin → เปลี่ยนเป็น return role == "admin"
+    return role in ("admin", "teachers")
