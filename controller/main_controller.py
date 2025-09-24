@@ -290,8 +290,8 @@ def on_connect(c, u, f, rc, props=None):
         print("[MQTT] Subscribed:", t)
 
 def build_client():
-    host = os.getenv("MQTT_HOST", "localhost")
-    port = int(os.getenv("MQTT_PORT", "1883"))
+    host = os.getenv("MQTT_HOST")
+    port = int(os.getenv("MQTT_PORT"))
     user = os.getenv("MQTT_USERNAME")
     pw = os.getenv("MQTT_PASSWORD")
     use_tls = bool(int(os.getenv("MQTT_TLS", "0")))
