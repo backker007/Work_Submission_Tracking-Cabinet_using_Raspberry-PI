@@ -6,17 +6,17 @@ def is_admin(role):
     return role == "admin"
 
 def is_teachers(role):
-    return role == "teachers"
+    return role == "teacher"
 
 def is_student(role):
     return role == "student"
 
 def is_valid_role(role: str) -> bool:
-    return role in ("admin", "teachers", "student")
+    return role in ("admin", "teacher", "student")
 
 def can_intake(role: str) -> bool:
-    return role in ("admin", "teachers", "student")
+    return role in ("admin", "teacher", "student")
 
 def can_removal(role: str) -> bool:
     # ถ้าต้องการให้เฉพาะ admin → เปลี่ยนเป็น return role == "admin"
-    return role in ("admin", "teachers")
+    return role in ("admin", "teacher")
