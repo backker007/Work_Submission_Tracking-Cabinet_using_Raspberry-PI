@@ -41,6 +41,27 @@ slot_status = [{"capacity_mm": 0, "available": True, "is_open": False} for _ in 
 slot_locks: dict[str, threading.Lock] = {sid: threading.Lock() for sid in SLOT_IDS}
 # --- NEW: I2C bus lock (VL53L0X / PCA9685 / MCP23017 ใช้บัสเดียวกัน → ต้องกันชน)
 i2c_lock = threading.RLock()
+# ===== TIMING (ปรับผ่าน ENV ได้) =====
+ACTIVE_CHECK_INTERVAL = float(os.getenv("ACTIVE_CHECK_INTERVAL", "0.10"))  # ช่วงรอ event/monitor
+IDLE_CHECK_INTERVAL   = float(os.getenv("IDLE_CHECK_INTERVAL",   "0.20"))  # ช่วงทั่วไป
+
+# ===== I²C SHORT-LOCK HELPERS =====
+def i2c_read_sensor(index: int) -> float:
+    with i2c_lock:
+        return read_sensor(index)
+
+def i2c_move_servo_180(index: int, angle: int) -> None:
+    with i2c_lock:
+        move_servo_180(index, angle)
+
+def i2c_is_door_closed(index: int) -> bool:
+    with i2c_lock:
+        return is_door_reliably_closed(index)
+
+def i2c_set_relay(index: int, value: bool) -> None:
+    with i2c_lock:
+        relay_pins[index].value = value
+
 
 # ===== MQTT helpers for idx =====
 def publish_status_idx(idx: int):
@@ -55,16 +76,16 @@ def publish_warning_idx(idx: int, message: str):
 
 def Storage_compartment(index: int):
     try:
-        with i2c_lock:
-            move_servo_180(index, 180)
+        # เปิดฝากระท่องาน (ล็อกเฉพาะตอนสั่งจริง)
+        i2c_move_servo_180(index, 180)
         print(f"🔄 เปิดมอเตอร์ช่อง {INDEX_TO_SLOT[index]} (→ 180°)")
 
+        # อ่านค่าเริ่มต้น (retry ภายใน 5 วินาที)
         initial = -1
         timeout = time.time() + 5
         while initial <= 0 and time.time() < timeout:
-            with i2c_lock:
-                initial = read_sensor(index)
-            time.sleep(0.2)
+            initial = i2c_read_sensor(index)
+            time.sleep(ACTIVE_CHECK_INTERVAL)
 
         state = "wait_insert" if initial > 0 else "close_servo"
         if initial <= 0:
@@ -74,27 +95,23 @@ def Storage_compartment(index: int):
             if state == "wait_insert":
                 timeout = time.time() + 10
                 while time.time() < timeout:
-                    with i2c_lock:
-                        current = read_sensor(index)
+                    current = i2c_read_sensor(index)
                     print(f"⏳ รอการใส่ของ... {INDEX_TO_SLOT[index]}: {current:.1f} mm")
                     if current > 0 and current < initial - CHANGE_THRESHOLD:
                         print("📦 ตรวจพบการใส่ของครั้งแรก")
                         state = "monitor_movement"
                         break
-                    time.sleep(0.2)
+                    time.sleep(ACTIVE_CHECK_INTERVAL)
                 else:
                     print("⏱ หมดเวลาใส่ของ → ปิดมอเตอร์")
                     state = "close_servo"
 
             elif state == "monitor_movement":
                 last_motion_time = time.time()
-                with i2c_lock:
-                    last_distance = read_sensor(index)
+                last_distance = i2c_read_sensor(index)
                 print("🔁 เริ่มตรวจจับความเคลื่อนไหว...")
-
                 while True:
-                    with i2c_lock:
-                        current = read_sensor(index)
+                    current = i2c_read_sensor(index)
                     print(f"🚱 {INDEX_TO_SLOT[index]}: {current:.1f} mm")
                     if abs(current - last_distance) >= CHANGE_THRESHOLD:
                         print("🔍 พบการขยับ → รีเซ็ตตัวจับเวลา")
@@ -103,20 +120,21 @@ def Storage_compartment(index: int):
                     if time.time() - last_motion_time >= 3:
                         print("⏳ ไม่มีการขยับนาน 3 วิ → ปิดมอเตอร์")
                         break
-                    time.sleep(0.2)
-
+                    time.sleep(ACTIVE_CHECK_INTERVAL)
                 state = "close_servo"
 
             elif state == "close_servo":
                 print(f"🔒 ปิดมอเตอร์ช่อง {INDEX_TO_SLOT[index]} (← 0°)")
-                with i2c_lock:
-                    move_servo_180(index, 0)
-                    capacity = read_sensor(index)
-                    sensor_exists = index < len(vl53_sensors)
+                i2c_move_servo_180(index, 0)
+                capacity = i2c_read_sensor(index)
+                sensor_exists = index < len(vl53_sensors)
                 is_available = capacity > ZERO_THRESHOLD and sensor_exists
-                slot_status[index].update(
-                    {"capacity_mm": capacity, "available": is_available, "is_open": not is_door_reliably_closed(index)}
-                )
+                is_open = not i2c_is_door_closed(index)
+                slot_status[index].update({
+                    "capacity_mm": capacity,
+                    "available": is_available,
+                    "is_open": is_open
+                })
                 publish_status_idx(index)
                 state = "done"
 
@@ -128,46 +146,41 @@ def Storage_compartment(index: int):
 # ===== DOOR UNLOCK SEQUENCE (เอาเอกสารออก) =====
 def handle_door_unlock(index: int):
     try:
-        with i2c_lock:
-            relay_pins[index].value = True
+        i2c_set_relay(index, True)  # Relay ON
         print(f"🔓 เปิดประตูช่อง {INDEX_TO_SLOT[index]} (Relay ON)")
 
+        # รอให้ผู้ใช้เปิดจริงภายใน 10 วิ
         wait_start = time.time()
         while time.time() - wait_start <= 10:
-            with i2c_lock:
-                closed = is_door_reliably_closed(index)
+            closed = i2c_is_door_closed(index)
             if not closed:
-                slot_status[index]["is_open"] = not is_door_reliably_closed(index)
+                slot_status[index]["is_open"] = True  # เปิดแล้ว
                 publish_status_idx(index)
                 publish_warning_idx(index, "ประตูถูกเปิดแล้ว")
                 print("✅ ประตูถูกเปิดแล้ว")
                 break
             print("⏳ ยังไม่มีการเปิดประตู...")
-            time.sleep(0.2)
+            time.sleep(ACTIVE_CHECK_INTERVAL)
         else:
-            with i2c_lock:
-                relay_pins[index].value = False
+            i2c_set_relay(index, False)  # Relay OFF
             publish_warning_idx(index, "ได้รับคำสั่งปลดล็อก แต่ไม่มีการเปิดประตูภายในเวลาที่กำหนด ระบบได้ทำการล็อกกลับโดยอัตโนมัติ")
             print("⚠️ ครบเวลาแต่ยังไม่เปิดประตู → ล็อกกลับทันที")
             return
 
+        # เฝ้าการนำเอกสารออก
         extract_start = time.time()
-        last_warning_time = 0
+        last_warning_time = 0.0
         last_motion_time = time.time()
-        with i2c_lock:
-            last_distance = read_sensor(index)
+        last_distance = i2c_read_sensor(index)
         motion_detected = False
 
         print("📦 เริ่มตรวจจับการนำเอกสารออก...")
         while True:
-            with i2c_lock:
-                closed = is_door_reliably_closed(index)
-            if closed:
+            if i2c_is_door_closed(index):
                 print("🚪 ผู้ใช้ปิดประตูก่อน timeout → ไปล็อก")
                 break
 
-            with i2c_lock:
-                current = read_sensor(index)
+            current = i2c_read_sensor(index)
             print(f"📉 ความจุปัจจุบัน: {current:.1f} mm")
 
             if abs(current - last_distance) >= CHANGE_THRESHOLD:
@@ -184,58 +197,51 @@ def handle_door_unlock(index: int):
                 break
 
             if time.time() - last_motion_time > 5:
-                with i2c_lock:
-                    still_open = not is_door_reliably_closed(index)
-                if still_open and time.time() - last_warning_time > 120:
+                if not i2c_is_door_closed(index) and time.time() - last_warning_time > 120:
                     print("⚠️ ไม่มีการเคลื่อนไหว และประตูยังไม่ปิด → แจ้งเตือนซ้ำ")
                     publish_warning_idx(index, "กรุณาปิดประตูให้สนิทเพื่อทำการล็อก")
                     last_warning_time = time.time()
 
-            time.sleep(0.2)
+            time.sleep(ACTIVE_CHECK_INTERVAL)
 
+        # รอให้ปิดสนิท แล้วค้าง 1.5s เพื่อความนิ่ง
         print(f"⏳ ตรวจสอบซ้ำว่าประตูปิดสนิท รอ 1.5 วินาที...")
         while True:
-            with i2c_lock:
-                closed = is_door_reliably_closed(index)
-            if closed:
+            if i2c_is_door_closed(index):
                 break
             if time.time() - last_warning_time > 10:
                 publish_warning_idx(index, "ประตูยังไม่ปิดสนิท กรุณาปิดให้สนิทเพื่อทำการล็อก")
                 last_warning_time = time.time()
-            time.sleep(0.2)
+            time.sleep(ACTIVE_CHECK_INTERVAL)
         time.sleep(1.5)
 
-        with i2c_lock:
-            relay_pins[index].value = False
+        # ล็อก (Relay OFF)
+        i2c_set_relay(index, False)
         publish_warning_idx(index, "ประตูถูกล็อกแล้ว")
         print(f"🔐 ล็อกประตูช่อง {INDEX_TO_SLOT[index]} (Relay OFF)")
 
         time.sleep(0.5)
-        with i2c_lock:
-            ok = is_door_reliably_closed(index)
-        if not ok:
-            publish_warning_idx(index, "ประตูถูกล็อกแล้ว")
+        if not i2c_is_door_closed(index):
+            publish_warning_idx(index, "ระบบพยายามล็อกแล้ว แต่ประตูยังไม่ปิดสนิท")
             return
 
+        # อ่านค่าความจุแบบนิ่งก่อนส่งออก
         print("📏 รอค่าวัดความจุนิ่งก่อนส่งออก...")
         stable_start = time.time()
-        with i2c_lock:
-            stable_value = read_sensor(index)
+        stable_value = i2c_read_sensor(index)
         while True:
-            with i2c_lock:
-                current = read_sensor(index)
+            current = i2c_read_sensor(index)
             if abs(current - stable_value) < 1:
                 if time.time() - stable_start >= 2:
                     break
             else:
                 stable_start = time.time()
                 stable_value = current
-            time.sleep(0.2)
+            time.sleep(ACTIVE_CHECK_INTERVAL)
 
-        with i2c_lock:
-            new_value = read_sensor(index)
+        new_value = i2c_read_sensor(index)
         slot_status[index]["capacity_mm"] = new_value
-        slot_status[index]["is_open"] = not is_door_reliably_closed(index)
+        slot_status[index]["is_open"] = not i2c_is_door_closed(index)
         slot_status[index]["available"] = new_value > ZERO_THRESHOLD
         publish_status_idx(index)
 
