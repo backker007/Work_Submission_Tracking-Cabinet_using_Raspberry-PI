@@ -1,6 +1,6 @@
 # controller/main_controller.py
 from __future__ import annotations
-import os, sys, json, time, threading, queue, ssl
+import os, sys, json, time, threading, ssl
 from pathlib import Path
 
 # --- Path & .env ---
@@ -36,7 +36,7 @@ ZERO_THRESHOLD = int(os.getenv("ZERO_THRESHOLD", "70"))  # >70mm = ว่าง
 # reading_active = False
 selected_sensor_index: int | None = None
 user_role: str | None = None
-slot_status = [{"capacity_mm": 0, "available": True, "door_closed": True} for _ in SLOT_IDS]
+slot_status = [{"capacity_mm": 0, "available": True, "is_open": False} for _ in SLOT_IDS]
 # --- NEW: per-slot locks สำหรับกันคำสั่งซ้อนใน "ช่องเดียวกัน"
 slot_locks: dict[str, threading.Lock] = {sid: threading.Lock() for sid in SLOT_IDS}
 # --- NEW: I2C bus lock (VL53L0X / PCA9685 / MCP23017 ใช้บัสเดียวกัน → ต้องกันชน)
@@ -120,7 +120,7 @@ def Storage_compartment(index: int):
                     {
                         "capacity_mm": capacity,
                         "available": is_available,
-                        "door_closed": True,
+                        "is_open": True,
                     }
                 )
                 publish_status_idx(index)
@@ -194,7 +194,7 @@ def Storage_compartment(index: int):
                     sensor_exists = index < len(vl53_sensors)
                 is_available = capacity > ZERO_THRESHOLD and sensor_exists
                 slot_status[index].update(
-                    {"capacity_mm": capacity, "available": is_available, "door_closed": True}
+                    {"capacity_mm": capacity, "available": is_available, "is_open": not is_door_reliably_closed(index)}
                 )
                 publish_status_idx(index)
                 state = "done"
@@ -319,7 +319,7 @@ def handle_door_unlock(index: int):
 
         new_value = read_sensor(index)
         slot_status[index]["capacity_mm"] = new_value
-        slot_status[index]["door_closed"] = True
+        slot_status[index]["is_open"] = True
         slot_status[index]["available"] = new_value > ZERO_THRESHOLD
         publish_status_idx(index)
 
@@ -339,6 +339,8 @@ def handle_door_unlock(index: int):
             with i2c_lock:
                 closed = is_door_reliably_closed(index)
             if not closed:
+                slot_status[index]["is_open"] = not is_door_reliably_closed(index)
+                publish_status_idx(index)
                 publish_warning_idx(index, "ประตูถูกเปิดแล้ว")
                 print("✅ ประตูถูกเปิดแล้ว")
                 break
@@ -436,7 +438,7 @@ def handle_door_unlock(index: int):
         with i2c_lock:
             new_value = read_sensor(index)
         slot_status[index]["capacity_mm"] = new_value
-        slot_status[index]["door_closed"] = True
+        slot_status[index]["is_open"] = not is_door_reliably_closed(index)
         slot_status[index]["available"] = new_value > ZERO_THRESHOLD
         publish_status_idx(index)
 
@@ -504,10 +506,10 @@ def on_message(client, userdata, msg):
 
 def start_slot_task(action: str, slot_id: str, role: str):
     # ตรวจสิทธิ์ขั้นสุดท้ายก่อนเริ่ม (กัน edge case)
-    if action in ("intake", "slot") and not can_open_slot(role):
+    if action == "slot" and not can_open_slot(role):
         publish_warning(slot_id, f"🚫 role '{role}' ไม่มีสิทธิ์ {action}")
         return
-    if action in ("removal", "door") and not can_open_door(role):
+    if action == "door" and not can_open_door(role):
         publish_warning(slot_id, f"🚫 role '{role}' ไม่มีสิทธิ์ {action}")
         return
 
@@ -520,9 +522,9 @@ def start_slot_task(action: str, slot_id: str, role: str):
 
     def run():
         try:
-            if action in ("slot", "intake"):
+            if action == "slot":
                 Storage_compartment(idx)
-            elif action in ("door", "removal"):
+            elif action == "door":
                 handle_door_unlock(idx)
             else:
                 publish_warning(slot_id, f"ไม่รู้จักคำสั่ง: {action}")
@@ -584,7 +586,7 @@ def main():
 
     # Initial status broadcast
     for i, sid in enumerate(SLOT_IDS):
-        slot_status[i] = {"capacity_mm": 200 + i, "available": True, "door_closed": True}
+        slot_status[i] = {"capacity_mm": 200 + i, "available": True, "is_open": False}
         publish_status(sid, slot_status[i])
         time.sleep(0.05)
 
