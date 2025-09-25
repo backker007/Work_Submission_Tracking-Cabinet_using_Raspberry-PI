@@ -22,7 +22,7 @@ def get_subscriptions(broad: bool = True) -> list[str]:
         return [TOPIC_COMMAND_OPEN_DOOR, TOPIC_COMMAND_OPEN_SLOT]
     return [t_command(s, "door") for s in SLOT_IDS] + [t_command(s, "slot") for s in SLOT_IDS]
 
-def publish_status(slot_id: str, status: dict, *, qos=1, retain=False):
+def publish_status(slot_id: str, status: dict, *, qos=1, retain=True):
     payload = {"cupboard_id": CUPBOARD_ID,"slot_id": slot_id, **status,"ts": time.time()}
     return publish_mqtt(t_status(slot_id), payload, qos=qos, retain=retain)
 
