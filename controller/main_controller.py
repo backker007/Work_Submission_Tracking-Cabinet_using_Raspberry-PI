@@ -405,14 +405,14 @@ def handle_door_unlock(index: int):
                 publish_warning_idx(index, "ประตูยังไม่ปิดสนิท กรุณาปิดให้สนิทเพื่อทำการล็อก")
                 last_warning_time = time.time()
             time.sleep(0.2)
-        time.sleep(1.5)
+        # time.sleep(1.5)
 
         with i2c_lock:
             relay_pins[index].value = False
         publish_warning_idx(index, "ประตูถูกล็อกแล้ว")
         print(f"🔐 ล็อกประตูช่อง {INDEX_TO_SLOT[index]} (Relay OFF)")
 
-        time.sleep(0.5)
+        # time.sleep(0.5)
         with i2c_lock:
             ok = is_door_reliably_closed(index)
         if not ok:
@@ -420,20 +420,20 @@ def handle_door_unlock(index: int):
             publish_warning_idx(index, "ระบบพยายามล็อกแล้ว แต่ประตูยังไม่ปิดสนิท")
             return
 
-        print("📏 รอค่าวัดความจุนิ่งก่อนส่งออก...")
-        stable_start = time.time()
-        with i2c_lock:
-            stable_value = read_sensor(index)
-        while True:
-            with i2c_lock:
-                current = read_sensor(index)
-            if abs(current - stable_value) < 1:
-                if time.time() - stable_start >= 2:
-                    break
-            else:
-                stable_start = time.time()
-                stable_value = current
-            time.sleep(0.2)
+        # print("📏 รอค่าวัดความจุนิ่งก่อนส่งออก...")
+        # stable_start = time.time()
+        # with i2c_lock:
+        #     stable_value = read_sensor(index)
+        # while True:
+        #     with i2c_lock:
+        #         current = read_sensor(index)
+        #     if abs(current - stable_value) < 1:
+        #         if time.time() - stable_start >= 2:
+        #             break
+        #     else:
+        #         stable_start = time.time()
+        #         stable_value = current
+        #     time.sleep(0.2)
 
         with i2c_lock:
             new_value = read_sensor(index)
@@ -598,6 +598,7 @@ def main():
     client.loop_forever()
 
 # ===== WORKER THREAD =====
+'''
 def worker():
     global reading_active, selected_sensor_index, user_role
     while True:
@@ -628,6 +629,7 @@ def worker():
             publish_warning(slot_id, "เกิดข้อผิดพลาด", extra={"detail": str(e)})
         finally:
             cmd_q.task_done()
+'''
 
 if __name__ == "__main__":
     main()

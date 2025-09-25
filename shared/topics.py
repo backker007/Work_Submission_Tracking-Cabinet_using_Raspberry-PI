@@ -22,7 +22,7 @@ def get_subscriptions(broad: bool = True) -> list[str]:
         return [TOPIC_COMMAND_OPEN_DOOR, TOPIC_COMMAND_OPEN_SLOT]
     return [t_command(s, "door") for s in SLOT_IDS] + [t_command(s, "slot") for s in SLOT_IDS]
 
-def publish_status(slot_id: str, status: dict, *, qos=1, retain=False):
+def publish_status(slot_id: str, status: dict, *, qos=0, retain=False):
     payload = {"cupboard_id": CUPBOARD_ID,"slot_id": slot_id, **status,"ts": time.time()}
     return publish_mqtt(t_status(slot_id), payload, qos=qos, retain=retain)
 
@@ -30,5 +30,5 @@ def publish_warning(slot_id: str, message: str, *, qos=1, retain=False, extra: d
     payload = {"cupboard_id": CUPBOARD_ID,"slot_id": slot_id, "message": message, "ts": time.time(), **(extra or {})}
     return publish_mqtt(t_warning(slot_id), payload, qos=qos, retain=retain)
 
-def publish_unlock(slot_id: str, role: str = "admin", *, qos=1, retain=False):
+def publish_unlock(slot_id: str, role: str = "admin", *, qos=0, retain=False):
     return publish_mqtt(t_command(slot_id, "DOOR"), {"role": role}, qos=qos, retain=retain)
