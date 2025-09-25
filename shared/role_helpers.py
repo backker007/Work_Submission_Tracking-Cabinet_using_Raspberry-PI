@@ -14,9 +14,9 @@ def is_student(role):
 def is_valid_role(role: str) -> bool:
     return role in ("admin", "teacher", "student")
 
-def can_intake(role: str) -> bool:
+def can_open_slot(role: str) -> bool:
     return role in ("admin", "teacher", "student")
 
-def can_removal(role: str) -> bool:
+def can_open_door(role: str) -> bool:
     # ถ้าต้องการให้เฉพาะ admin → เปลี่ยนเป็น return role == "admin"
     return role in ("admin", "teacher")

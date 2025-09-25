@@ -26,7 +26,7 @@ from shared.hardware_helpers import (
 )
 
 # --- Role helpers  ---
-from shared.role_helpers import can_intake, can_removal, is_valid_role
+from shared.role_helpers import can_open_slot, can_open_door, is_valid_role
 
 # ===== CONFIG =====
 ZERO_THRESHOLD = int(os.getenv("ZERO_THRESHOLD", "70"))  # >70mm = ว่าง
@@ -255,6 +255,7 @@ def handle_door_unlock(index: int):
 run_state_machine = Storage_compartment
 
 # ===== MQTT LISTENER (เบา: โยนเข้าคิว) =====
+
 def on_message(client, userdata, msg):
     try:
         parts = msg.topic.split("/")  # smartlocker/{node}/slot/SC00+{slot_id}/command/{action}
@@ -272,10 +273,10 @@ def on_message(client, userdata, msg):
         if not is_valid_role(role):
             print(f"❌ Invalid role: {role}")
             return
-        if action == "intake" and not can_intake(role):
+        if action == "intake" and not can_open_slot(role):
             print(f"🚫 role '{role}' ไม่มีสิทธิ์ {action}")
             return
-        if action == "removal" and not can_removal(role):
+        if action == "removal" and not can_open_door(role):
             print(f"🚫 role '{role}' ไม่มีสิทธิ์ {action}")
             return
 
@@ -365,9 +366,9 @@ def worker():
             reading_active = True
 
             try:
-                if action == "intake":
+                if action == "slot":
                     Storage_compartment(idx)
-                elif action == "removal":
+                elif action == "door":
                     handle_door_unlock(idx)
                 else:
                     publish_warning(slot_id, f"ไม่รู้จักคำสั่ง: {action}")

@@ -2,7 +2,7 @@
 from __future__ import annotations
 import os, time
 from typing import List, Dict
-from shared.utils import publish_mqtt
+from .utils import publish_mqtt
 
 CUPBOARD_ID: str = os.getenv("CUPBOARD_ID")
 SLOT_IDS = [s.strip() for s in os.getenv("SLOT_IDS", "").split(",") if s.strip()]
@@ -14,13 +14,13 @@ def t_status(slot_id: str) -> str:  return f"smartlocker/{CUPBOARD_ID}/slot_id/{
 def t_warning(slot_id: str) -> str: return f"smartlocker/{CUPBOARD_ID}/slot_id/{slot_id}/warning"
 def t_command(slot_id: str, action: str) -> str: return f"smartlocker/{CUPBOARD_ID}/slot_id/{slot_id}/command_open/{action}"
 
-TOPIC_COMMAND_OPEN_REMOVAL  = "smartlocker/+/slot_id/+/command_open/removal"
-TOPIC_COMMAND_OPEN_INTAKE = "smartlocker/+/slot_id/+/command_open/intake"
+TOPIC_COMMAND_OPEN_DOOR  = "smartlocker/+/slot_id/+/command_open/door"
+TOPIC_COMMAND_OPEN_SLOT = "smartlocker/+/slot_id/+/command_open/slot"
 
 def get_subscriptions(broad: bool = True) -> list[str]:
     if broad:
-        return [TOPIC_COMMAND_OPEN_INTAKE, TOPIC_COMMAND_OPEN_REMOVAL]
-    return [t_command(s, "removal") for s in SLOT_IDS] + [t_command(s, "intake") for s in SLOT_IDS]
+        return [TOPIC_COMMAND_OPEN_DOOR, TOPIC_COMMAND_OPEN_SLOT]
+    return [t_command(s, "door") for s in SLOT_IDS] + [t_command(s, "slot") for s in SLOT_IDS]
 
 def publish_status(slot_id: str, status: dict, *, qos=1, retain=False):
     payload = {"cupboard_id": CUPBOARD_ID,"slot_id": slot_id, **status,"ts": time.time()}
@@ -31,4 +31,4 @@ def publish_warning(slot_id: str, message: str, *, qos=1, retain=False, extra: d
     return publish_mqtt(t_warning(slot_id), payload, qos=qos, retain=retain)
 
 def publish_unlock(slot_id: str, role: str = "admin", *, qos=1, retain=False):
-    return publish_mqtt(t_command(slot_id, "removal"), {"role": role}, qos=qos, retain=retain)
+    return publish_mqtt(t_command(slot_id, "DOOR"), {"role": role}, qos=qos, retain=retain)
