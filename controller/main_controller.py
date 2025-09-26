@@ -256,6 +256,7 @@ run_state_machine = Storage_compartment
 
 # ===== MQTT LISTENER =====
 def on_message(client, userdata, msg):
+    print("on_message:", msg.topic, msg.payload)
     try:
         parts = msg.topic.split("/")
         if len(parts) < 6 or parts[0] != "smartlocker":
@@ -299,6 +300,7 @@ def start_slot_task(action: str, slot_id: str, role: str):
                 Storage_compartment(idx)
             elif action == "door":
                 handle_door_unlock(idx)
+                print("✅ ประตูเปิดเรียบร้อย")
             else:
                 publish_warning(slot_id, f"ไม่รู้จักคำสั่ง: {action}")
         except Exception as e:
