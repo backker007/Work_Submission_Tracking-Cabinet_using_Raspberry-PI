@@ -4,7 +4,14 @@ import ssl
 import time
 import json
 import paho.mqtt.client as mqtt
+from datetime import datetime
+from zoneinfo import ZoneInfo  # Python 3.9+
 
+# =============================================================================
+# 1) ฟังก์ชัน publish_mqtt : ส่งข้อความไปยัง MQTT Broker (รองรับ TLS/WS/Retry)
+#    - อ่านค่า default จาก ENV: MQTT_HOST, MQTT_PORT, MQTT_USERNAME, MQTT_PASSWORD,
+#      MQTT_TLS, MQTT_WS, MQTT_CLIENT_ID, MQTT_CA
+# =============================================================================
 def publish_mqtt(
     topic,
     payload,
@@ -21,7 +28,7 @@ def publish_mqtt(
     client_id=None,
     websocket=False,        # True = MQTT over WebSocket (wss), มักใช้พอร์ต 443
 ):
- 
+
     # ---------- Load defaults from ENV ----------
     broker    = broker    or os.getenv("MQTT_HOST", "localhost")
     port      = int(port or os.getenv("MQTT_PORT", "1883"))
@@ -93,3 +100,12 @@ def publish_mqtt(
             time.sleep(1)
 
     return False
+
+
+# =============================================================================
+# 2) ฟังก์ชันเวลา (Asia/Bangkok)
+#    - now_bkk_str(): คืนค่าสตริงเวลาแบบท้องถิ่น กทม. ความละเอียดมิลลิวินาที
+# =============================================================================
+def now_bkk_str() -> str:
+    # ตัวอย่าง: 2025-09-27 12:05:18.209
+    return datetime.now(ZoneInfo("Asia/Bangkok")).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]

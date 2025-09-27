@@ -1,6 +1,9 @@
 # ✅ shared/hardware_helpers.py
 # 🔧 รวมฟังก์ชันและ global ที่เกี่ยวข้องกับการควบคุม hardware: I2C, Servo, Sensor, MCP23017
 
+# =============================================================================
+# 1) Imports
+# =============================================================================
 import time
 import os
 import board
@@ -12,6 +15,9 @@ from adafruit_pca9685 import PCA9685
 from adafruit_mcp230xx.mcp23017 import MCP23017
 import adafruit_vl53l0x
 
+# =============================================================================
+# 2) I2C & Global Hardware Interface
+# =============================================================================
 # ==== I2C & Global Hardware Interface ====
 shared_i2c = busio.I2C(board.SCL, board.SDA)
 pca = PCA9685(shared_i2c)
@@ -24,6 +30,9 @@ mcp = None
 mcp_pins = []
 relay_pins = []
 
+# =============================================================================
+# 3) SERVO CONTROL
+# =============================================================================
 # ==== SERVO CONTROL ====
 def angle_to_duty_cycle(angle):
     pulse_us = 500 + (angle / 180.0) * 2000
@@ -36,6 +45,9 @@ def move_servo_180(channel, angle):
     time.sleep(0.7)
     pca.channels[channel].duty_cycle = 0
 
+# =============================================================================
+# 4) SENSOR (VL53L0X) อ่านค่า + simple smoothing
+# =============================================================================
 # ==== SENSOR ====
 CHANGE_THRESHOLD = 5
 NEAR_SENSOR_THRESHOLD = 80
@@ -58,6 +70,9 @@ def read_sensor(sensor_index):
     except:
         return -1
 
+# =============================================================================
+# 5) DOOR SENSOR (MC-38) Debounce/Confirm Close
+# =============================================================================
 # ==== DOOR SENSOR (MC-38 Debounce) ====
 def is_door_reliably_closed(index, samples=20, interval=0.03):
     """
@@ -72,6 +87,9 @@ def is_door_reliably_closed(index, samples=20, interval=0.03):
     false_count = results.count(False)
     return false_count == 0
 
+# =============================================================================
+# 6) MCP23017 INIT (รีเลย์ + door switch)
+# =============================================================================
 # ==== MCP23017 INIT ====
 def init_mcp():
     global mcp, mcp_pins, relay_pins
@@ -93,6 +111,9 @@ def init_mcp():
             pin.direction = Direction.OUTPUT
         mcp_pins.append(pin)
 
+# =============================================================================
+# 7) VL53L0X INIT (XSHUT multi-sensor addressing)
+# =============================================================================
 # ==== VL53L0X INIT ====
 XSHUT_PINS = [digitalio.DigitalInOut(pin) for pin in [board.D17, board.D27, board.D22, board.D5]]
 ADDRESS_BASE = 0x30
@@ -137,6 +158,9 @@ def init_sensors():
         reset_i2c_bus()
         init_sensors()
 
+# =============================================================================
+# 8) I2C Bus Reset helper
+# =============================================================================
 def reset_i2c_bus():
     os.system("sudo i2cdetect -y 1 > /dev/null 2>&1")
     time.sleep(0.5)
