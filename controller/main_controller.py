@@ -211,7 +211,7 @@ def handle_door_unlock(index: int):
         else:
             # Timeout → ล็อกกลับ
             i2c_set_relay(index, False)
-            publish_warning_idx(index, "ได้รับคำสั่งปลดล็อก แต่ไม่มีการเปิดประตูภายในเวลาที่กำหนด ระบบได้ทำการล็อกกลับโดยอัตโนมัติ")
+            publish_warning_idx(index, "ประตูถูกล็อกแล้ว")  
             log_event("⚠️ ครบเวลาแต่ยังไม่เปิดประตู → ล็อกกลับทันที")
             return
 
@@ -225,6 +225,7 @@ def handle_door_unlock(index: int):
         log_event("📦 เริ่มตรวจจับการนำเอกสารออก...")
         while True:
             if i2c_is_door_closed(index):
+                publish_warning_idx(index, "ประตูถูกล็อกแล้ว")             
                 log_event("🚪 ผู้ใช้ปิดประตูก่อน timeout → ไปล็อก")
                 break
 
@@ -238,18 +239,18 @@ def handle_door_unlock(index: int):
                 motion_detected = True
 
             # หมดเวลา 30 วิ → ไปต่อขั้นรอปิด
-            if time.time() - extract_start > 30:
-                if not motion_detected:
-                    log_event("⚠️ เปิดประตูแล้วแต่ไม่พบการขยับเลย → แจ้งเตือน")
-                    publish_warning_idx(index, "เปิดประตูแล้วแต่ไม่พบการขยับของเลย")
-                log_event("⏳ หมดเวลานำออก → เข้าสู่โหมดรอปิดประตู")
-                break
+            # if time.time() - extract_start > 30:
+            #     if not motion_detected:
+            #         log_event("⚠️ เปิดประตูแล้วแต่ไม่พบการขยับเลย → แจ้งเตือน")
+            #         publish_warning_idx(index, "เปิดประตูแล้ว ")
+            #     log_event("⏳ หมดเวลานำออก → เข้าสู่โหมดรอปิดประตู")
+            #     break
 
             # ไม่มีการขยับ 5 วิ และยังไม่ปิด → เตือนทุก 120 วิ
             if time.time() - last_motion_time > 5:
                 if not i2c_is_door_closed(index) and time.time() - last_warning_time > 120:
                     log_event("⚠️ ไม่มีการเคลื่อนไหว และประตูยังไม่ปิด → แจ้งเตือนซ้ำ")
-                    publish_warning_idx(index, "กรุณาปิดประตูให้สนิทเพื่อทำการล็อก")
+                    publish_warning_idx(index, "ลืมปิดประตู !!! กรุณาปิดให้สนิทเพื่อทำการล็อก")
                     last_warning_time = time.time()
 
             time.sleep(ACTIVE_CHECK_INTERVAL)
@@ -259,7 +260,7 @@ def handle_door_unlock(index: int):
         while True:
             if i2c_is_door_closed(index):
                 break
-            if time.time() - last_warning_time > 10:
+            if time.time() - last_warning_time > 120:
                 publish_warning_idx(index, "ประตูยังไม่ปิดสนิท กรุณาปิดให้สนิทเพื่อทำการล็อก")
                 last_warning_time = time.time()
             time.sleep(ACTIVE_CHECK_INTERVAL)
@@ -389,8 +390,6 @@ def on_message(client, userdata, msg):
 
 def start_slot_task(action: str, slot_id: str, role: str):
     a = normalize_action(action)
-
-    # ตรวจสิทธิ์ตาม role
     if a == "slot" and not can_open_slot(role):
         publish_warning(slot_id, f"🚫 role '{role}' ไม่มีสิทธิ์ {a}")
         return
@@ -398,7 +397,6 @@ def start_slot_task(action: str, slot_id: str, role: str):
         publish_warning(slot_id, f"🚫 role '{role}' ไม่มีสิทธิ์ {a}")
         return
 
-    # ส่งงานเข้าคิว (ถ้าคิวเต็ม → ทิ้งงานและแจ้งเตือน)
     try:
         slot_queues[slot_id].put_nowait((a, role))
     except Full:
@@ -415,8 +413,8 @@ def on_connect(c, u, f, rc, props=None):
         c.subscribe(t, qos=1)
         log_event(f"[MQTT] Subscribed: {t}")
 
-def on_disconnect(c, u, rc, props=None):
-    log.error(f"[MQTT] Disconnected rc={rc} props={props}")
+def on_disconnect(c, u, flags, rc, props=None):
+    log.error(f"[MQTT] Disconnected rc={rc} flags={flags} props={props}")
 
 def build_client():
     host = os.getenv("MQTT_HOST")
@@ -459,6 +457,35 @@ def build_client():
     client.connect(host, port, keepalive=60)
     return client
 
+# =============================================================================
+# WORKER STARTUP
+    # Worker ประจำ 'ช่อง' เดียว:
+    # - รันวนตลอดชีวิตเธรด
+    # - ดึงงานจากคิวของช่องนั้น (serialize งานต่อช่องโดยอัตโนมัติ)
+    # - ทำงานตาม action: "slot" หรือ "door"
+    # - ไม่สร้างเธรดใหม่ต่อคำสั่ง → จำนวนเธรดคงที่ อ่าน log ง่าย
+# =============================================================================
+
+def slot_worker(slot_id: str, idx: int):
+    # ตั้งชื่อเธรดให้อ่าน log ง่าย
+    threading.current_thread().name = f"worker-{slot_id}"
+    while True:
+        # ดึงงานจากคิวของช่องนั้น (action, role)
+        action, role = slot_queues[slot_id].get()
+        try:
+            if action == "slot":
+                Storage_compartment(idx)
+            elif action == "door":
+                handle_door_unlock(idx)
+            else:
+                publish_warning(slot_id, f"ไม่รู้จักคำสั่ง: {action}")
+        except Exception as e:
+            # กันล้มเธรด worker และมี log/แจ้งเตือน
+            log.exception(f"[worker-{slot_id}] error while handling '{action}'")
+            publish_warning(slot_id, f"เกิดข้อผิดพลาด: {e}")
+        finally:
+            # แจ้งคิวว่างให้ตัวถัดไปทำงาน
+            slot_queues[slot_id].task_done()
 
 # =============================================================================
 # WORKER STARTUP
