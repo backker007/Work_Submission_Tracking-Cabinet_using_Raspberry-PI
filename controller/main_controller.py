@@ -521,6 +521,7 @@ def main():
     # MQTT loop
     client = build_client()
     client.loop_forever()
+    
 
 
 if __name__ == "__main__":
