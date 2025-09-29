@@ -66,7 +66,7 @@ selected_sensor_index: int | None = None
 user_role: str | None = None
 
 # สถานะของแต่ละช่อง (index ตรงกับ SLOT_IDS)
-slot_status = [{"capacity_mm": 0, "available": True, "is_open": False} for _ in SLOT_IDS]
+slot_status = [{"capacity_mm": 0, "connection_status": True, "is_open": False} for _ in SLOT_IDS]
 
 # I2C lock ป้องกัน race ระหว่าง sensor/servo/relay
 i2c_lock = threading.RLock()
@@ -510,7 +510,6 @@ def main():
 
     # ค่าเริ่มต้น (ตัวอย่าง/เดโม)
     for i, sid in enumerate(SLOT_IDS):
-        slot_status[i] = {"capacity_mm": 200 + i, "available": True, "is_open": False}
         publish_status(sid, slot_status[i])
         time.sleep(0.05)
 
