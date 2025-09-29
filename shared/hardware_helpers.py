@@ -37,7 +37,7 @@ relay_pins = []
 def angle_to_duty_cycle(angle):
     pulse_us = 500 + (angle / 180.0) * 2000
     return int((pulse_us / 20000.0) * 65535)
-
+    
 def move_servo_180(channel, angle):
     duty_cycle = angle_to_duty_cycle(angle)
     print(f"  → SG90-180° CH{channel} → {angle}° (duty: {duty_cycle})")
