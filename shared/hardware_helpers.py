@@ -50,7 +50,7 @@ def move_servo_180(channel, angle):
 # =============================================================================
 # ==== SENSOR ====
 CHANGE_THRESHOLD = 5
-NEAR_SENSOR_THRESHOLD = 80
+NEAR_SENSOR_THRESHOLD = 10
 BUFFER_SIZE = 5
 
 def read_sensor(sensor_index):
@@ -64,7 +64,7 @@ def read_sensor(sensor_index):
         stable = last_values[sensor_index]
 
         if stable < NEAR_SENSOR_THRESHOLD:
-            return -1
+            return -0
 
         return stable
     except:

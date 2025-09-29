@@ -35,7 +35,7 @@ from shared.role_helpers import can_open_slot, can_open_door, is_valid_role
 # CONFIG
 # =============================================================================
 
-ZERO_THRESHOLD = int(os.getenv("ZERO_THRESHOLD", "70"))  # >70mm = ว่าง
+ZERO_THRESHOLD = int(os.getenv("ZERO_THRESHOLD", "10"))  # >10mm = ว่าง
 ACTIVE_CHECK_INTERVAL = float(os.getenv("ACTIVE_CHECK_INTERVAL", "0.10"))
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
@@ -174,7 +174,7 @@ def Storage_compartment(index: int):
 
                 slot_status[index].update({
                     "capacity_mm": capacity,
-                    "available": is_available,
+                    "connection_status": is_available,
                     "is_open": is_open,
                 })
                 publish_status_idx(index)
@@ -294,7 +294,7 @@ def handle_door_unlock(index: int):
         new_value = i2c_read_sensor(index)
         slot_status[index]["capacity_mm"] = new_value
         slot_status[index]["is_open"] = not i2c_is_door_closed(index)
-        slot_status[index]["available"] = new_value > ZERO_THRESHOLD
+        slot_status[index]["connection_status"] = new_value > ZERO_THRESHOLD
         publish_status_idx(index)
 
     except Exception as e:
