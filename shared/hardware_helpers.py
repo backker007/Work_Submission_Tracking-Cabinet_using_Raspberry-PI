@@ -148,6 +148,8 @@ def init_sensors():
             sensor = adafruit_vl53l0x.VL53L0X(shared_i2c)
             sensor.set_address(ADDRESS_BASE + i)
             sensor.measurement_timing_budget = 33000
+            sensor.range = sensor.RANGE_SHORT  # ตั้งเป็น RANGE_SHORT สำหรับการวัดระยะใกล้
+            sensor.inter_measurement_period = 50
             vl53_sensors.append(sensor)
             buffers.append(deque(maxlen=BUFFER_SIZE))
             last_values.append(None)
@@ -163,4 +165,4 @@ def init_sensors():
 # =============================================================================
 def reset_i2c_bus():
     os.system("sudo i2cdetect -y 1 > /dev/null 2>&1")
-    time.sleep(0.5)
+    time.sleep(0.5) 
