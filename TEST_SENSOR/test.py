@@ -40,7 +40,7 @@ if __name__ == "__main__":
                 else:
                     adjusted_distance = average_distance
                 
-                print(f"Adjusted Average Distance: {adjusted_distance:.f} mm")
+                print(f"Adjusted Average Distance: {adjusted_distance:.1f} mm")
             else:
                 print("Waiting for enough data points...")
             
