@@ -35,8 +35,8 @@ from shared.role_helpers import can_open_slot, can_open_door, is_valid_role
 # CONFIG
 # =============================================================================
 
-ZERO_THRESHOLD = int(os.getenv("ZERO_THRESHOLD", "10"))  # >10mm = ว่าง
-ACTIVE_CHECK_INTERVAL = float(os.getenv("ACTIVE_CHECK_INTERVAL", "0.10"))
+ZERO_THRESHOLD = int(os.getenv("ZERO_THRESHOLD")) 
+ACTIVE_CHECK_INTERVAL = float(os.getenv("ACTIVE_CHECK_INTERVAL"))
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
 logging.basicConfig(
@@ -291,9 +291,20 @@ def handle_door_unlock(index: int):
             time.sleep(ACTIVE_CHECK_INTERVAL)
 
         new_value = i2c_read_sensor(index)
-        slot_status[index]["capacity_mm"] = new_value
-        slot_status[index]["is_open"] = not i2c_is_door_closed(index)
-        slot_status[index]["connection_status"] = new_value > ZERO_THRESHOLD
+        if new_value == -1 :
+            # slot_status[index]["capacity_mm"] = new_value
+            # slot_status[index]["is_open"] = not i2c_is_door_closed(index)
+            # slot_status[index]["connection_status"] = new_value > ZERO_THRESHOLD
+            slot_status[index].update({
+                "connection_status": new_value > ZERO_THRESHOLD,
+                "is_open": not i2c_is_door_closed(index),
+            })          
+        else:
+            slot_status[index].update({
+                "capacity_mm": new_value,
+                "connection_status": new_value > ZERO_THRESHOLD,
+                "is_open": not i2c_is_door_closed(index),
+            })
         publish_status_idx(index)
 
     except Exception as e:
@@ -496,6 +507,28 @@ def start_workers():
         t = threading.Thread(target=slot_worker, args=(sid, idx), daemon=True, name=f"worker-{sid}")
         t.start()
 
+# =============================================================================
+# UPDATE ALL SLOTS STATUS PERIODICALLY
+# =============================================================================
+
+def update_all_slots_status():
+    for idx in range(len(SLOT_IDS)):
+        # อ่านสถานะและค่าของเซ็นเซอร์
+        capacity = i2c_read_sensor(idx)
+        is_available = capacity > ZERO_THRESHOLD
+        is_open = not i2c_is_door_closed(idx)
+
+        # อัปเดตสถานะของช่อง
+        slot_status[idx].update({
+            "capacity_mm": capacity,
+            "connection_status": is_available,
+            "is_open": is_open,
+        })
+        # ส่งสถานะออกไปยัง MQTT
+        publish_status_idx(idx)
+
+    # หลังจากนั้นตั้งเวลาให้เรียกฟังก์ชันนี้ใหม่ทุก ๆ 2 นาที
+    threading.Timer(600, update_all_slots_status).start()  # 120 วินาที = 2 นาที
 
 # =============================================================================
 # MAIN
@@ -508,18 +541,21 @@ def main():
     reset_vl53_addresses()
     init_sensors()
 
-    # ค่าเริ่มต้น (ตัวอย่าง/เดโม)
-    for i, sid in enumerate(SLOT_IDS):
-        publish_status(sid, slot_status[i])
-        time.sleep(0.05)
+    # # ค่าเริ่มต้น (ตัวอย่าง/เดโม)
+    # for i, sid in enumerate(SLOT_IDS):
+    #     publish_status(sid, slot_status[i])
+    #     time.sleep(0.05)
 
-    # 🔧 เริ่ม worker ต่อช่อง (จำนวน thread คงที่, ชื่อคงที่)
+    # เริ่ม worker ต่อช่อง (จำนวน thread คงที่, ชื่อคงที่)
     start_workers()
+
+    # เริ่มการอัปเดตสถานะของทุกช่องทุก ๆ 2 นาที
+    update_all_slots_status()
 
     # MQTT loop
     client = build_client()
     client.loop_forever()
-    
+
 
 
 if __name__ == "__main__":

@@ -52,25 +52,25 @@ def move_servo_180(channel, angle):
 # 4) SENSOR (VL53L0X) อ่านค่า + simple smoothing
 # =============================================================================
 CHANGE_THRESHOLD = 5
-NEAR_SENSOR_THRESHOLD = 80
+NEAR_SENSOR_THRESHOLD = 70 # mm: ค่าที่อ่านได้น้อยกว่านี้ถือว่าใกล้เกินไป
 BUFFER_SIZE = 5
 
-def read_sensor(sensor_index):
-    try:
-        sensor = vl53_sensors[sensor_index]
-        raw = sensor.range
-        buffers[sensor_index].append(raw)
-        avg = sum(buffers[sensor_index]) / len(buffers[sensor_index])
-        if last_values[sensor_index] is None or abs(avg - last_values[sensor_index]) >= CHANGE_THRESHOLD:
-            last_values[sensor_index] = avg
-        stable = last_values[sensor_index]
+# def read_sensor(sensor_index):
+#     try:
+#         sensor = vl53_sensors[sensor_index]
+#         raw = sensor.range
+#         buffers[sensor_index].append(raw)
+#         avg = sum(buffers[sensor_index]) / len(buffers[sensor_index])
+#         if last_values[sensor_index] is None or abs(avg - last_values[sensor_index]) >= CHANGE_THRESHOLD:
+#             last_values[sensor_index] = avg
+#         stable = last_values[sensor_index]
 
-        if stable < NEAR_SENSOR_THRESHOLD:
-            return -1
+#         if stable < NEAR_SENSOR_THRESHOLD:
+#             return 0
 
-        return stable
-    except:
-        return -1
+#         return stable
+#     except:
+#         return -1
 
 
 # =============================================================================
