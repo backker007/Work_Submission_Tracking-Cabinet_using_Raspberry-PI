@@ -51,8 +51,8 @@ def move_servo_180(channel, angle):
 # 4) SENSOR (VL53L0X) Configuration สำหรับช่วง 0-200mm
 # =============================================================================
 # ช่วงการทำงานของโปรเจ็ค
-TARGET_MIN_MM = 0
-TARGET_MAX_MM = 200
+TARGET_MIN_MM = 20
+TARGET_MAX_MM = 30
 
 # การตั้งค่าเซ็นเซอร์
 TIMING_BUDGET_US = 20_000   # 20ms เร็วขึ้น (เทียบกับ default ~33ms)
@@ -221,11 +221,11 @@ def _smooth_and_stabilize(sensor_index, mm_value):
 
 def _clamp_to_range(mm_value):
     """จำกัดค่าให้อยู่ในช่วง TARGET_MIN_MM ถึง TARGET_MAX_MM"""
-    if mm_value < TARGET_MIN_MM:
-        return TARGET_MIN_MM
-    if mm_value > TARGET_MAX_MM:
-        return TARGET_MAX_MM
-    return mm_value
+    if ((TARGET_MIN_MM >= mm_value) and (mm_value <= TARGET_MAX_MM)):
+        return (mm_value - 25)
+    elif mm_value < TARGET_MIN_MM :
+        return 0
+    else : return mm_value
 
 
 def read_sensor(sensor_index):
