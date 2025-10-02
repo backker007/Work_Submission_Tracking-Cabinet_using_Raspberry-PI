@@ -34,4 +34,4 @@ shared/mqtt_helpers.py
 # Backup files
 *~
 *.bak
-/home/pi4/Desktop/Work_Submission_Tracking-Cabinet_using_Raspberry-PI/TEST_SENSOR
+TEST_SENSOR/*
