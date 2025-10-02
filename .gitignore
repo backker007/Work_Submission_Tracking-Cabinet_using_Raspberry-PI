@@ -34,4 +34,4 @@ shared/mqtt_helpers.py
 # Backup files
 *~
 *.bak
-TEST_SENSOR/*
+# TEST_SENSOR/*
