@@ -1,402 +1,247 @@
-# ✅ shared/hardware_helpers.py
-# รวมทุกส่วน I2C / MCP23017 / PCA9685 / Door / Servo / VL53L0X (พร้อม ENV overrides)
-# เพิ่มโหมด VL53_BUS_MODE=single : เปิดทีละตัวตอนอ่าน (เลี่ยง pull-up รวม)
+# shared/hardware_helpers.py
+# 🔧 รวมฟังก์ชัน/ตัวช่วยที่เกี่ยวกับ I2C, Servo, VL53L0X, MCP23017
 from __future__ import annotations
-import os, time
-from collections import deque
-
+import os, time, statistics, logging
 import board, busio, digitalio
+from collections import deque
 from digitalio import Direction
-from adafruit_bus_device.i2c_device import I2CDevice
-from adafruit_mcp230xx.mcp23017 import MCP23017
 from adafruit_pca9685 import PCA9685
-import adafruit_vl53l0x
+from adafruit_mcp230xx.mcp23017 import MCP23017
 
-def D(n: int): return getattr(board, f"D{n}")
+from .vl53l0x_init import (
+    XshutDriver, init_vl53x_four, read_mm, debug_summary, SensorHandle
+)
 
-# ---------------- I2C ----------------
+log = logging.getLogger("hw")
+
+# =============================================================================
+# I2C & Peripherals
+# =============================================================================
 shared_i2c = busio.I2C(board.SCL, board.SDA)
-def reset_i2c_bus():
-    try:
-        while shared_i2c.try_lock():
-            shared_i2c.unlock()
-    except Exception: pass
-    time.sleep(0.25)
 
-# ---------------- MCP23017 ----------------
-MCP23017_ADDR = int(os.getenv("MCP23017_ADDR", "0x20"), 16)
-DOOR_INPUT_PINS = [0,1,2,3]
-RELAY_OUTPUT_PINS = [0,1,2,3]
-_env_door = os.getenv("MCP23017_DOOR_PINS")
-_env_relay = os.getenv("MCP23017_RELAY_PINS")
-if _env_door:  DOOR_INPUT_PINS  = [int(s) for s in _env_door.split(",") if s.strip()]
-if _env_relay: RELAY_OUTPUT_PINS= [int(s) for s in _env_relay.split(",") if s.strip()]
-mcp: MCP23017|None = None
-mcp_pins: list[digitalio.DigitalInOut] = []
-relay_pins: list[digitalio.DigitalInOut] = []
-def init_mcp():
-    global mcp, mcp_pins, relay_pins
-    mcp = MCP23017(shared_i2c, address=MCP23017_ADDR)
-    mcp_pins=[]
-    for ch in DOOR_INPUT_PINS:
-        p=mcp.get_pin(ch); p.direction=Direction.INPUT; p.pull=digitalio.Pull.UP; mcp_pins.append(p)
-    relay_pins=[]
-    for ch in RELAY_OUTPUT_PINS:
-        p=mcp.get_pin(8+ch); p.switch_to_output(value=False); relay_pins.append(p)
-    print("✅ MCP23017 initialized")
-def set_relay(index:int, value:bool)->None:
-    if 0<=index<len(relay_pins): relay_pins[index].value=bool(value)
-def is_door_closed(index:int)->bool:
-    if 0<=index<len(mcp_pins): return bool(mcp_pins[index].value)
-    return False
-def is_door_reliably_closed(index:int, samples:int=12, interval:float=0.03)->bool:
-    trues=0
-    for _ in range(samples):
-        if is_door_closed(index): trues+=1
-        time.sleep(interval)
-    return trues>=int(0.8*samples)
+# Servo board
+pca = PCA9685(shared_i2c)
+pca.frequency = 50
 
-# ---------------- PCA9685 (Servo) ----------------
-PCA9685_ADDR = int(os.getenv("PCA9685_ADDR","0x40"),16)
-SERVO_CHANNELS = [0,1,2,3]
-_env_srv = os.getenv("SERVOS_CHANNELS")
-if _env_srv: SERVO_CHANNELS=[int(s) for s in _env_srv.split(",") if s.strip()]
-pca: PCA9685|None = None
-def _ensure_pca():
-    global pca
-    if pca is None:
-        pca = PCA9685(shared_i2c, address=PCA9685_ADDR); pca.frequency=50
-def _us_to_pwm_on_off(us:float)->tuple[int,int]:
-    period_us=20000.0; ticks_per_us=4096.0/period_us
-    width=int(us*ticks_per_us); width=max(0,min(4095,width)); return (0,width)
-def move_servo_180(index:int, degrees:float)->None:
-    _ensure_pca()
-    if index<0 or index>=len(SERVO_CHANNELS): return
-    ch=SERVO_CHANNELS[index]
-    min_us=float(os.getenv("SERVO_MIN_US","500")); max_us=float(os.getenv("SERVO_MAX_US","2500"))
-    deg=max(0.0,min(180.0,float(degrees)))
-    pulse_us=min_us+(max_us-min_us)*(deg/180.0)
-    _on,off=_us_to_pwm_on_off(pulse_us); pca.channels[ch].duty_cycle=off
-
-# ---------------- VL53L0X ----------------
-_default_pins=[17,27,22,5]
-_pins_env=os.getenv("VL53_XSHUT_PINS")
-_pins=[int(s) for s in _pins_env.split(",") if s.strip()] if _pins_env else _default_pins
-XSHUT_PINS=[digitalio.DigitalInOut(D(p)) for p in _pins]
-
-ADDRESS_BASE     = int(os.getenv("VL53_ADDR_BASE","0x30"),16)  # 0x30..0x33
-BOOT_DELAY_S     = float(os.getenv("VL53_BOOT_DELAY_S","1.2"))
-BOOT_TIMEOUT_S   = float(os.getenv("VL53_BOOT_TIMEOUT_S","1.6"))
-TIMING_BUDGET_US = int(os.getenv("VL53_BUDGET_US","33000"))
-USE_CONTINUOUS   = os.getenv("VL53_CONTINUOUS","1") in ("1","true","True","YES","yes")
-KEEP_ADDRESSES   = os.getenv("VL53_KEEP_ON_EXIT","1") in ("1","true","True","YES","yes")
-BUS_MODE         = os.getenv("VL53_BUS_MODE","multi").lower()  # 'multi' | 'single'  ← ใหม่!
-
-TARGET_MIN_MM    = 20
-TARGET_MAX_MM    = 30
-SMOOTH_WINDOW    = 5
-OUTLIER_MM       = 15
-CHANGE_THRESHOLD = 5  # export ให้ main ใช้ได้
-
-# ---- I2C helpers
-def _i2c_scan()->set[int]:
-    try:
-        shared_i2c.try_lock(); return set(shared_i2c.scan())
-    finally:
-        try: shared_i2c.unlock()
-        except Exception: pass
-def _i2c_scan_has(addr:int)->bool: return addr in _i2c_scan()
-def _wait_addr(addr:int, timeout:float, poll=0.06, need_consecutive:int=2)->bool:
-    seen=0
-    t0=time.time()
-    while time.time()-t0<timeout:
-        if _i2c_scan_has(addr):
-            seen+=1
-            if seen>=need_consecutive:
-                return True
-        else:
-            seen=0
-        time.sleep(poll)
-    return False
-def _write_u8(addr:int, reg:int, val:int)->None:
-    dev=I2CDevice(shared_i2c, addr)
-    with dev: dev.write(bytes([reg&0xFF, val&0x7F]))
-
-# ---- XSHUT
-def init_xshuts():
-    for x in XSHUT_PINS: x.switch_to_output(value=False)
-    time.sleep(0.3)
-    print(f"✅ XSHUT pins initialized (all LOW) → pins={_pins}")
-    if BUS_MODE=="multi":
-        print("🔧 INLINE BOOT ACTIVE (multi-device)")
-    else:
-        print("🧰 SINGLE-ACTIVE mode (software workaround)")
-
-def _reset_all_to_0x29():
-    for x in XSHUT_PINS: x.value=False
-    time.sleep(0.35)
-    for x in XSHUT_PINS: x.value=True
-    time.sleep(0.6)
-    print("🔄 VL53 reset XSHUT LOW→HIGH (กลับเป็น 0x29)")
-
-# ---- Open driver retries
-def _open_sensor_with_retries(addr:int, tries:int=10, sleep_s:float=0.3):
-    last=None
-    for _ in range(tries):
-        if not _wait_addr(addr, timeout=0.25, need_consecutive=2):
-            time.sleep(sleep_s); continue
-        try:
-            s=adafruit_vl53l0x.VL53L0X(shared_i2c, address=addr)
-            try: _=s.range
-            except Exception: pass
-            return s
-        except Exception as e:
-            last=e; time.sleep(sleep_s)
-    raise last if last else OSError(f"VL53L0X 0x{addr:02X} not found")
-
-# =========================
-# A) โหมด MULTI (เดิม): INLINE assign→open
-# =========================
-def _assign_open_one(i:int, x:digitalio.DigitalInOut, target:int):
-    """
-    LIGHT-STYLE inline assign:
-    - XSHUT ตัวนี้ขึ้น HIGH
-    - ถ้ามี target อยู่แล้ว -> เปิดเลย
-    - ไม่กด XSHUT ลงซ้ำ, เขียน 0x8A ตรง ๆ ที่ 0x29 แล้วรอให้ target โผล่
-    """
-    # ปลุกตัวนี้
-    x.value = True
-    time.sleep(BOOT_DELAY_S)
-
-    # ถ้าเคยอยู่ที่ target อยู่แล้ว ให้เปิดเลย
-    if _wait_addr(target, timeout=0.8, need_consecutive=2):
-        return _open_sensor_with_retries(target, tries=10, sleep_s=0.25)
-
-    # รอ 0x29 โผล่ (บูตเสร็จ)
-    if not _wait_addr(0x29, timeout=max(BOOT_TIMEOUT_S, 2.0), need_consecutive=2):
-        raise OSError(f"idx{i}: 0x29 not seen")
-
-    # เขียน 0x8A -> target (7-bit address ใช้ 7 LSB)
-    _write_u8(0x29, 0x8A, target)
-    time.sleep(0.20)
-
-    # รอการย้ายที่อยู่ให้เสถียร (เห็น target)
-    t0 = time.time()
-    moved = False
-    while time.time() - t0 < 2.5:
-        if _i2c_scan_has(target):
-            moved = True
-            break
-        time.sleep(0.08)
-
-    if not moved:
-        raise OSError(f"idx{i}: move->0x{target:02X} not stable")
-
-    # เปิดไดรเวอร์ที่ที่อยู่ใหม่
-    return _open_sensor_with_retries(target, tries=10, sleep_s=0.25)
-
-
-def _reassign_and_open(i:int, x:digitalio.DigitalInOut, target:int):
-    """
-    Recovery แบบเบา: power-cycle ตัวเดียว แล้วทำ light-style assign เดิมซ้ำ
-    (ยังคง "ไม่" isolate โดยการกด XSHUT ลงระหว่าง assign)
-    """
-    x.value = False
-    time.sleep(0.40)
-    x.value = True
-    time.sleep(max(BOOT_DELAY_S, 1.0))
-    # ถ้าบูตมาแล้ว target มีอยู่ -> เปิดเลย
-    if _wait_addr(target, timeout=0.8, need_consecutive=2):
-        return _open_sensor_with_retries(target, tries=10, sleep_s=0.25)
-
-    if not _wait_addr(0x29, timeout=max(BOOT_TIMEOUT_S, 2.2), need_consecutive=2):
-        raise OSError(f"idx{i}: 0x29 not seen after re-power")
-
-    _write_u8(0x29, 0x8A, target)
-    time.sleep(0.20)
-
-    t0 = time.time()
-    while time.time() - t0 < 2.5:
-        if _i2c_scan_has(target):
-            return _open_sensor_with_retries(target, tries=10, sleep_s=0.25)
-        time.sleep(0.08)
-
-    raise OSError(f"idx{i}: reassign->0x{target:02X} not stable")
-
-# ---- Runtime state (ใช้ร่วมกัน)
-vl53_sensors: list[adafruit_vl53l0x.VL53L0X|None] = []
+# Globals
+_vl53_handles: dict[int, SensorHandle] = {}
 buffers: list[deque] = []
-last_values: list[int|None] = []
+last_values: list[int | None] = []
+mcp = None
+mcp_pins: list = []
+relay_pins: list = []
 
-# ---- Filters
-def _apply_outlier_reject(idx:int, raw:int)->int:
-    prev=last_values[idx]
-    if prev is not None and abs(raw-prev)>OUTLIER_MM: return prev
-    return raw
-def _smooth_and_stabilize(idx:int, raw:int)->int:
-    buffers[idx].append(raw); s=sorted(buffers[idx]); median=s[len(s)//2]
-    prev=last_values[idx]
-    if prev is None or abs(median-prev)>=CHANGE_THRESHOLD:
-        last_values[idx]=median; return median
-    return prev
-def _clamp_to_range(mm:int)->int:
-    return max(TARGET_MIN_MM, min(TARGET_MAX_MM, mm))
+# =============================================================================
+# ENV Config (ปรับจูนได้จาก .env)
+# =============================================================================
+TARGET_MIN_MM = int(os.getenv("TARGET_MIN_MM", "20"))
+TARGET_MAX_MM = int(os.getenv("TARGET_MAX_MM", "30"))
 
-# =========================
-# B) โหมด SINGLE-ACTIVE (ใหม่): ปลุกทีละตัวตอนอ่าน
-# =========================
-def _single_boot_and_read(index: int) -> int:
-    """
-    SINGLE-ACTIVE:
-    - ดึง XSHUT ทุกตัวลง -> ปลุกเฉพาะ index
-    - รอ 0x29 เสถียร
-    - เปิดไดรเวอร์ 0x29 -> start_continuous สั้น ๆ -> อ่าน median หลายครั้ง
-    - ปิด XSHUT ตัวนี้ แล้วคืนค่า (หรือ -1)
-    """
-    # ปิดทุกตัวก่อน
-    for x0 in XSHUT_PINS:
-        x0.value = False
-    time.sleep(0.18)
+TIMING_BUDGET_US     = int(os.getenv("VL53_BUDGET_US", "20000"))
+VL53_BOOT_DELAY_S    = float(os.getenv("VL53_BOOT_DELAY_S", "0.35"))   # เติมเพิ่มจาก 0.35 ได้
+VL53_BOOT_TIMEOUT_S  = float(os.getenv("VL53_BOOT_TIMEOUT_S", "1.2"))
+VL53_ADDR_SET_RETRIES= int(os.getenv("VL53_ADDR_SET_RETRIES", "4"))
+VL53_ADDR_SET_GAP_S  = float(os.getenv("VL53_ADDR_SET_GAP_S", "0.08"))
+VL53_ALLOW_ADAFRUIT  = os.getenv("VL53_ALLOW_ADAFRUIT", "1").lower() in ("1","true","yes")
 
-    x = XSHUT_PINS[index]
+SMOOTH_WINDOW  = int(os.getenv("VL53_SMOOTH_WINDOW", "5"))
+OUTLIER_MM     = int(os.getenv("VL53_OUTLIER_MM", "15"))
+CHANGE_THRESHOLD = int(os.getenv("CHANGE_THRESHOLD", "5"))
 
-    for attempt in range(3):  # ลองสูงสุด 3 รอบ
-        # ปลุกเฉพาะตัวนี้
-        x.value = True
-        time.sleep(max(BOOT_DELAY_S, 1.2))  # ขยายให้บูตเสถียรขึ้น
+ADDRESS_BASE = int(os.getenv("VL53_BASE_ADDR", "0x30"), 16)            # 0x30..33
+_xshut_env   = os.getenv("VL53_XSHUT_PINS", "17,27,22,5")
+_xshut_gpio  = [int(p.strip()) for p in _xshut_env.split(",") if p.strip()]
+XSHUT_PINS   = [digitalio.DigitalInOut(getattr(board, f"D{gpio}")) for gpio in _xshut_gpio]
 
-        # รอ 0x29 โผล่ติดกัน >=3 ครั้ง
-        if not _wait_addr(0x29, timeout=max(BOOT_TIMEOUT_S, 3.0), poll=0.06, need_consecutive=3):
-            # power-cycle แล้วลองใหม่
-            x.value = False
-            time.sleep(0.25)
-            continue
+INIT_ALL_LOW = os.getenv("VL53_INIT_ALL_LOW", "1").lower() in ("1","true","yes")
+BUS_MODE     = os.getenv("VL53_BUS_MODE", "multi").strip().lower()     # multi|mux|single
 
-        val = -1
-        try:
-            # เปิดไดรเวอร์ที่ 0x29
-            s = _open_sensor_with_retries(0x29, tries=10, sleep_s=0.2)
-            try:
-                s.measurement_timing_budget = TIMING_BUDGET_US
-            except Exception:
-                pass
+print(f"🔌 XSHUT GPIO pins from .env: {_xshut_gpio}")
 
-            # วอร์มด้วย continuous burst สั้น ๆ แล้วอ่าน median
-            try:
-                s.start_continuous()
-                time.sleep(0.12)  # ให้เริ่มยิงก่อนเล็กน้อย
-                val = _read_vl53_single_shot(s, samples=8, delay_s=0.03)
-            finally:
-                try:
-                    s.stop_continuous()
-                except Exception:
-                    pass
+# =============================================================================
+# SERVO CONTROL
+# =============================================================================
+def angle_to_duty_cycle(angle: float) -> int:
+    pulse_us = 500 + (angle / 180.0) * 2000
+    return int((pulse_us / 20000.0) * 65535)
 
-            # ถ้ายังไม่ได้ค่า valid ลองอ่านซ้ำอีกรอบสั้น ๆ
-            if val == -1:
-                val = _read_vl53_single_shot(s, samples=6, delay_s=0.04)
+def move_servo_180(channel: int, angle: int):
+    duty_cycle = angle_to_duty_cycle(angle)
+    log.debug(f"Servo CH{channel} → {angle}° (duty: {duty_cycle})")
+    pca.channels[channel].duty_cycle = duty_cycle
+    time.sleep(0.7)
+    pca.channels[channel].duty_cycle = 0
 
-        except Exception:
-            val = -1
+# =============================================================================
+# DOOR SENSOR (MC-38) via MCP23017
+# =============================================================================
+def is_door_reliably_closed(index: int, samples=20, interval=0.03) -> bool:
+    """True = ปิดสนิท (อ่าน HIGH ทั้งหมด)"""
+    results = []
+    pin = mcp_pins[8 + index]
+    for _ in range(samples):
+        results.append(pin.value)
+        time.sleep(interval)
+    return results.count(False) == 0
 
-        # ปิดเซ็นเซอร์ตัวนี้เสมอ เพื่อตัด pull-up รวม
-        x.value = False
-        time.sleep(0.03)
+def init_mcp():
+    """กำหนดรีเลย์/สวิตช์ประตู"""
+    global mcp, mcp_pins, relay_pins
+    mcp = MCP23017(shared_i2c)
+    relay_pin_nums = [12, 13, 14, 15]
+    door_switch_pins = [8, 9, 10, 11]
 
-        if val != -1:
-            return _clamp_to_range(val)
+    mcp_pins.clear()
+    relay_pins.clear()
 
-        # ลองใหม่ (power-cycle) ถ้าอ่านไม่ได้
-        time.sleep(0.2)
+    for pin_num in range(16):
+        pin = mcp.get_pin(pin_num)
+        if pin_num in relay_pin_nums:
+            pin.direction = Direction.OUTPUT
+            pin.value = False
+            relay_pins.append(pin)
+            print(f"  ✅ Relay pin {pin_num} initialized (OFF)")
+        elif pin_num in door_switch_pins:
+            pin.direction = Direction.INPUT
+            pin.pull_up = False
+            print(f"  ✅ Door switch pin {pin_num} initialized")
+        else:
+            pin.direction = Direction.OUTPUT
+        mcp_pins.append(pin)
 
-    return -1
+    print(f"✅ MCP23017 initialized: {len(relay_pins)} relays, {len(door_switch_pins)} door switches")
 
-def _read_vl53_single_shot(s, samples: int = 8, delay_s: float = 0.03) -> int:
-    """
-    อ่านหลายครั้ง ลดโอกาสได้ 0/invalid แล้วคืน median ของค่า 1..2000
-    ใช้ได้ทั้งตอน continuous และ single-shot
-    """
-    vals = []
-    for _ in range(max(1, samples)):
-        try:
-            v = int(s.range)
-            if 1 <= v <= 2000:
-                vals.append(v)
-        except Exception:
-            pass
-        time.sleep(delay_s)
-    if not vals:
-        return -1
-    vals.sort()
-    return vals[len(vals)//2]
-
-
-# --------- Init sensors ----------
-def init_sensors():
-    vl53_sensors.clear(); buffers.clear(); last_values.clear()
-    init_xshuts()
-    if BUS_MODE=="single":
-        # ไม่สร้างไดรเวอร์ถาวร ปล่อย None ไว้หมด
-        for _ in XSHUT_PINS:
-            vl53_sensors.append(None)
-            buffers.append(deque(maxlen=SMOOTH_WINDOW))
-            last_values.append(None)
-        print("🧰 SINGLE-ACTIVE: will boot & read each sensor on-demand at 0x29")
+# =============================================================================
+# XSHUT helpers
+# =============================================================================
+def init_xshuts():
+    pins_str = ",".join(str(p) for p in _xshut_gpio)
+    if BUS_MODE == "mux":
+        print("✅ MUX mode: skip XSHUT (handled by TCA9548A)")
         return
 
-    # ---- โหมด multi (เดิม)
-    for i, x in enumerate(XSHUT_PINS):
-        target = ADDRESS_BASE + i
-        try:
-            print(f"\n→ idx{i}: XSHUT HIGH, target 0x{target:02X}")
-            s = _assign_open_one(i, x, target)
-            vl53_sensors.append(s)
-            buffers.append(deque(maxlen=SMOOTH_WINDOW))
-            last_values.append(None)
-            print(f"✅ Sensor {i} @ I2C 0x{target:02X} ready (inline)")
-        except Exception as e1:
-            print(f"⚠️ Sensor {i} inline open failed: {e1} → recovery…")
-            try:
-                s = _reassign_and_open(i, x, target)
-                vl53_sensors.append(s)
-                buffers.append(deque(maxlen=SMOOTH_WINDOW))
-                last_values.append(None)
-                print(f"✅ Sensor {i} recovered @ I2C 0x{target:02X} (inline)")
-            except Exception as e:
-                print(f"❌ Error initializing sensor {i}: {e}")
-                vl53_sensors.append(None)
-                buffers.append(deque(maxlen=SMOOTH_WINDOW))
-                last_values.append(None)
-                x.value=False
-        time.sleep(0.25)
+    for x in XSHUT_PINS:
+        x.direction = digitalio.Direction.OUTPUT
 
-    if any(s is not None for s in vl53_sensors) and USE_CONTINUOUS:
-        for i, s in enumerate(vl53_sensors):
-            if s is None: continue
-            try:
-                try: s.measurement_timing_budget = TIMING_BUDGET_US
-                except Exception: pass
-                s.start_continuous()
-                print(f"▶️  start_continuous: 0x{ADDRESS_BASE + i:02X}")
-                time.sleep(0.05)
-            except Exception as ce:
-                print(f"⚠️ start_continuous failed on 0x{ADDRESS_BASE + i:02X}: {ce}")
+    if INIT_ALL_LOW:
+        for x in XSHUT_PINS: x.value = False
+        time.sleep(0.3)
+        print(f"✅ XSHUT pins initialized (all LOW) → pins={pins_str}")
+    else:
+        for x in XSHUT_PINS: x.value = True
+        time.sleep(0.05)
+        print(f"✅ XSHUT pins initialized (NO RESET, all HIGH) → pins={pins_str}")
 
-# --------- Read safely ----------
+    print("🔧 INLINE BOOT ACTIVE (multi-device)" if BUS_MODE == "multi" else "🧰 SINGLE-ACTIVE mode")
+
+def _make_xshut_driver():
+    """Driver แบบ index-based: เปิดเฉพาะตัวที่กำลังตั้ง ไม่ไปยุ่งตัวก่อนหน้า"""
+    class _IdxDriver:
+        def __init__(self, pins):
+            self._pins = pins
+            for p in self._pins: p.direction = digitalio.Direction.OUTPUT
+        @property
+        def pins(self): return list(range(len(self._pins)))
+        def all_low(self):  [setattr(p, "value", False) for p in self._pins]
+        def one_high(self, index: int): self._pins[index].value = True
+        def set_low(self, k: int):  self._pins[k].value = False
+        def set_high(self, k: int): self._pins[k].value = True
+        def all_high(self): [setattr(p, "value", True) for p in self._pins]
+    return _IdxDriver(XSHUT_PINS)
+
+# =============================================================================
+# VL53 INIT + READ
+# =============================================================================
+def init_sensors():
+    """เริ่มต้น VL53L0X ทั้งหมด พร้อมตั้ง I2C address 0x30.. ตามลำดับ XSHUT"""
+    global _vl53_handles, buffers, last_values
+    buffers.clear(); last_values.clear()
+    init_xshuts()
+    if BUS_MODE != "multi":
+        print(f"⚠️ BUS_MODE={BUS_MODE} (ตัวอย่างนี้รองรับ multi/XSHUT เป็นหลัก)")
+
+    driver = _make_xshut_driver()
+    new_addrs = [ADDRESS_BASE + i for i in range(len(XSHUT_PINS))]
+
+    _vl53_handles = init_vl53x_four(
+        xshut=driver,
+        i2c=shared_i2c,
+        new_addrs=new_addrs,
+        bus=1,
+        timing_budget_us=TIMING_BUDGET_US,
+        allow_fallback=VL53_ALLOW_ADAFRUIT,
+        extra_boot_delay_s=VL53_BOOT_DELAY_S,
+        probe_retries=4,
+        probe_interval_s=0.15,
+        boot_timeout_s=VL53_BOOT_TIMEOUT_S,
+    )
+
+    # คง HIGH ทุกตัว กัน "ลืม addr"
+    try: driver.all_high()
+    except Exception:
+        for p in XSHUT_PINS: p.value = True
+
+    for _ in _vl53_handles:  # init buffers
+        buffers.append(deque(maxlen=SMOOTH_WINDOW))
+        last_values.append(None)
+
+    print("VL53 summary:", debug_summary(_vl53_handles))
+    print(f"✅ เริ่มต้นเซ็นเซอร์สำเร็จ: {len(_vl53_handles)}/{len(_xshut_gpio)} ตัว")
+
+    if not _vl53_handles:
+        print("⚠️ ยังไม่พบเซ็นเซอร์เลย → reset I2C แล้วลองใหม่")
+        reset_i2c_bus()
+        time.sleep(0.3)
+        return init_sensors()
+
+def reset_i2c_bus():
+    print("🔄 กำลัง reset I2C bus...")
+    os.system("sudo i2cdetect -y 1 > /dev/null 2>&1")
+    time.sleep(0.5)
+    print("✅ I2C bus reset complete")
+
+def _apply_outlier_reject(sensor_index, mm_value):
+    if sensor_index >= len(buffers): return mm_value
+    buf = buffers[sensor_index]
+    if len(buf) >= 3:
+        m = statistics.median(buf)
+        if abs(mm_value - m) > OUTLIER_MM:
+            return int(m + (OUTLIER_MM if mm_value > m else -OUTLIER_MM))
+    return mm_value
+
+def _smooth_and_stabilize(sensor_index, mm_value):
+    if sensor_index >= len(buffers): return mm_value
+    buffers[sensor_index].append(mm_value)
+    stable = int(statistics.median(buffers[sensor_index]))
+    if sensor_index >= len(last_values): return stable
+    if last_values[sensor_index] is None or abs(stable - (last_values[sensor_index] or 0)) >= CHANGE_THRESHOLD:
+        last_values[sensor_index] = stable
+    return last_values[sensor_index]  # type: ignore
+
+def _clamp_to_range(mm_value: int) -> int:
+    if TARGET_MIN_MM <= mm_value <= TARGET_MAX_MM:
+        return int(mm_value - ((TARGET_MIN_MM + TARGET_MAX_MM) // 2))
+    if mm_value < TARGET_MIN_MM: return 0
+    return int(mm_value)
+
 def read_sensor(sensor_index: int) -> int:
     try:
-        if BUS_MODE == "single":
-            return _single_boot_and_read(sensor_index)
-        # ---- โหมด multi (คงเดิม)
-        if sensor_index >= len(vl53_sensors) or vl53_sensors[sensor_index] is None:
+        if sensor_index not in _vl53_handles:
+            print(f"⚠️ Sensor index {sensor_index} not initialized")
             return -1
-        sensor = vl53_sensors[sensor_index]
-        raw = int(sensor.range)
-        if raw <= 0 or raw > 2000:
-            return -1
+        raw = read_mm(_vl53_handles, sensor_index)
+        if raw is None or raw <= 0 or raw > 2000: return -1
         filtered = _apply_outlier_reject(sensor_index, raw)
         stable = _smooth_and_stabilize(sensor_index, filtered)
         return _clamp_to_range(stable)
     except Exception as e:
         print(f"⚠️ Error reading sensor {sensor_index}: {e}")
         return -1
+
+# Utilities for mapping/diagnostics
+def sensor_addr(index: int) -> int | None:
+    h = _vl53_handles.get(index)
+    return h.addr if h else None
+
+def vl53_address_map() -> dict[int, tuple[int, str]]:
+    return {i: (h.addr, h.backend) for i, h in _vl53_handles.items()}
