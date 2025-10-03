@@ -29,8 +29,8 @@ from shared.hardware_helpers import (
 )
 
 from shared.topics import (
-    CUPBOARD_ID, SLOT_IDS, SLOT_TO_INDEX, INDEX_TO_SLOT,
-    get_subscriptions, publish_status, publish_warning,
+    CUPBOARD_ID, SLOT_IDS, SLOT_TO_INDEX, INDEX_TO_SLOT, BASE,
+    get_subscriptions, publish_status, publish_warning, topic_status,
 )
 
 from shared.role_helpers import can_open_slot, can_open_door, is_valid_role
@@ -42,21 +42,28 @@ import paho.mqtt.client as mqtt
 def log_event(msg: str): log.info(msg)
 def log_dbg(msg: str): log.debug(msg)
 
+# MQTT client (global for publisher helpers)
+mqtt_client: mqtt.Client | None = None
+
 slot_status = [{"capacity_mm": 0, "connection_status": True, "is_open": False} for _ in SLOT_IDS]
 i2c_lock = threading.RLock()
 slot_queues: dict[str, Queue] = {sid: Queue(maxsize=10) for sid in SLOT_IDS}
 
 def i2c_read_sensor(index: int) -> int:
-    with i2c_lock: return read_sensor(index)
+    with i2c_lock:
+        return read_sensor(index)
 
 def i2c_move_servo_180(index: int, angle: int) -> None:
-    with i2c_lock: move_servo_180(index, angle)
+    with i2c_lock:
+        move_servo_180(index, angle)
 
 def i2c_is_door_closed(index: int) -> bool:
-    with i2c_lock: return is_door_reliably_closed(index)
+    with i2c_lock:
+        return is_door_reliably_closed(index)
 
 def i2c_set_relay(index: int, value: bool) -> None:
-    with i2c_lock: relay_pins[index].value = bool(value)
+    with i2c_lock:
+        relay_pins[index].value = bool(value)
 
 def log_vl53_mapping():
     try:
@@ -75,12 +82,32 @@ def log_vl53_mapping():
 # MQTT glue
 # =============================================================================
 def publish_status_idx(idx: int):
+    global mqtt_client
+    if mqtt_client is None:
+        log.error("publish_status_idx: mqtt_client is None")
+        return
     sid = INDEX_TO_SLOT[idx]
-    publish_status(sid, slot_status[idx])
+    t = topic_status(sid)
+    mid = publish_status(mqtt_client, slot_status[idx], sid)
+    log.info(f"[MQTT] Published to {t} -> {slot_status[idx]} (mid={mid})")
 
 def publish_warning_idx(idx: int, message: str):
+    global mqtt_client
+    if mqtt_client is None:
+        log.error("publish_warning_idx: mqtt_client is None")
+        return
     sid = INDEX_TO_SLOT[idx]
-    publish_warning(sid, message)
+    mid = publish_warning(mqtt_client, message, sid)
+    log.info(f"[PUB] warning {sid} mid={mid} message={message}")
+
+def send_warning(slot_id: str, message: str, extra: dict | None = None):
+    global mqtt_client
+    if mqtt_client is None:
+        log.error("send_warning: mqtt_client is None")
+        return
+    mid = publish_warning(mqtt_client, message, slot_id, extra)
+    log.info(f"[PUB] warning {slot_id} mid={mid} message={message} extra={extra}")
+
 
 def _slot_index(slot_id: str) -> int | None:
     return SLOT_TO_INDEX.get(slot_id)
@@ -88,12 +115,14 @@ def _slot_index(slot_id: str) -> int | None:
 def read_capacity_and_connection(slot_id: str) -> tuple[int, bool]:
     idx = _slot_index(slot_id)
     if idx is None: return -1, False
-    try: mm = i2c_read_sensor(idx)
-    except Exception: mm = -1
+    try:
+        mm = i2c_read_sensor(idx)
+    except Exception:
+        mm = -1
     return (mm, mm != -1)
 
 # =============================================================================
-# Slot / Door state machines (คงของเดิม แต่ย่อบรรทัดที่ไม่จำเป็น)
+# Slot / Door state machines (ย่อจากของเดิม)
 # =============================================================================
 def Storage_compartment(index: int):
     try:
@@ -231,37 +260,60 @@ run_state_machine = Storage_compartment
 # =============================================================================
 def normalize_action(a: str) -> str:
     s = (a or "").strip().lower()
-    if s in ("unlock", "open_door", "open-door"): return "door"
+    if s in ("unlock", "open_door", "open-door", "door"): return "door"
     if s in ("slot", "open_slot", "open-slot", "compartment", "bin"): return "slot"
-    return s
+    return s or "slot"
 
 def parse_command_topic(topic: str):
+    """
+    รองรับ 2 รูปแบบ:
+    - {BASE}/{node}/slot/{slot_id}/command[/...action]          (modern)
+    - {BASE}/{node}/slot_id/{slot_id}/command_open[/...action]  (legacy)
+    """
     parts = topic.split("/")
-    if len(parts) < 5 or parts[0] != "smartlocker": return None, None
-    slot_id = parts[3] if len(parts) > 3 else None
-    seg4 = parts[4] if len(parts) > 4 else ""
-    seg5 = parts[5] if len(parts) > 5 else ""
-    seg6 = parts[6] if len(parts) > 6 else ""
-    action_raw = seg6 or seg5 or seg4
-    if seg4 in ("command", "command_open"): action_raw = seg5 or seg6
-    elif seg5 in ("command", "command_open"): action_raw = seg6
-    if not slot_id or not action_raw: return None, None
-    return slot_id, normalize_action(action_raw)
+    if len(parts) < 5 or parts[0] != BASE:
+        return None, None
+
+    # ตำแหน่งชนิดช่อง
+    if parts[2] not in ("slot", "slot_id"):
+        return None, None
+    slot_id = parts[3]
+
+    action = ""
+    key = None
+    for k in ("command", "command_open"):
+        if k in parts:
+            key = k
+            break
+    if key:
+        i = parts.index(key)
+        action = "/".join(parts[i+1:]) if i+1 < len(parts) else ""
+
+    return slot_id, normalize_action(action)
+
 
 def parse_payload(raw_bytes: bytes) -> dict:
     raw = (raw_bytes or b"").decode("utf-8", errors="ignore").strip()
     if not raw: return {}
-    try: return json.loads(raw)
+    try:
+        return json.loads(raw)
     except json.JSONDecodeError:
-        log.error("payload JSON error: %r", raw); return {}
+        log.error("payload JSON error: %r", raw)
+        return {}
 
 def on_message(client, userdata, msg):
     try:
         slot_id, action = parse_command_topic(msg.topic)
-        if not slot_id or not action: return
-        role = str(parse_payload(msg.payload).get("role", "student")).lower()
-        if slot_id not in SLOT_TO_INDEX:   return log.error("❌ Unknown slot_id: %s", slot_id)
-        if not is_valid_role(role):         return log.error("❌ Invalid role: %s", role)
+        if not slot_id or not action:
+            return
+        payload = parse_payload(msg.payload)
+        role = str(payload.get("role", "student")).lower()
+
+        if slot_id not in SLOT_TO_INDEX:
+            return log.error("❌ Unknown slot_id: %s", slot_id)
+        if not is_valid_role(role):
+            return log.error("❌ Invalid role: %s", role)
+
         log_event(f"[START] {action} {slot_id} by {role}")
         start_slot_task(action, slot_id, role)
     except Exception as e:
@@ -270,17 +322,31 @@ def on_message(client, userdata, msg):
 def start_slot_task(action: str, slot_id: str, role: str):
     a = normalize_action(action)
     if a == "slot" and not can_open_slot(role):
-        return publish_warning(slot_id, f"🚫 role '{role}' ไม่มีสิทธิ์ {a}")
+        return send_warning(slot_id, f"🚫 role '{role}' ไม่มีสิทธิ์ {a}")
     if a == "door" and not can_open_door(role):
-        return publish_warning(slot_id, f"🚫 role '{role}' ไม่มีสิทธิ์ {a}")
-    try: slot_queues[slot_id].put_nowait((a, role))
+        return send_warning(slot_id, f"🚫 role '{role}' ไม่มีสิทธิ์ {a}")
+    try:
+        slot_queues[slot_id].put_nowait((a, role))
     except Full:
         log_event(f"🗑️ DROP: {slot_id} queue is full")
-        publish_warning(slot_id, "ช่องนี้กำลังทำงานอยู่ (คิวเต็ม) คำสั่งถูกละทิ้ง")
+        send_warning(slot_id, "ช่องนี้กำลังทำงานอยู่ (คิวเต็ม) คำสั่งถูกละทิ้ง")
+
+def on_publish(client, userdata, mid, reason_code=None, properties=None, *args):
+    rc = getattr(reason_code, "value", reason_code) if reason_code is not None else 0
+    log.info(f"[MQTT] PUBACK mid={mid} reason={rc}")
+
+
+def on_log(c, u, level, buf):
+    # ใช้เมื่อ LOG_LEVEL=DEBUG จะเห็น frame-level จาก paho
+    log.debug(f"[PAHO] {buf}")
 
 def on_connect(c, u, f, rc, props=None):
-    for t in get_subscriptions(broad=True):
-        c.subscribe(t, qos=1); log_event(f"[MQTT] Subscribed: {t}")
+    for t in get_subscriptions(broad=False):
+        c.subscribe(t, qos=1)
+        log_event(f"[MQTT] Subscribed: {t}")
+    publish_all_slots_status_once()
+
+
 
 def on_disconnect(c, u, flags, rc, props=None):
     log.error(f"[MQTT] Disconnected rc={rc} flags={flags} props={props}")
@@ -299,35 +365,52 @@ def build_client():
         transport="websockets" if ws else "tcp",
         protocol=mqtt.MQTTv311,
     )
-    if user: client.username_pw_set(user, pw)
+
+    if user:
+        client.username_pw_set(user, pw)
     if ws:
-        try: client.ws_set_options(path="/mqtt")
-        except Exception: pass
+        try:
+            client.ws_set_options(path="/mqtt")
+        except Exception:
+            pass
     if use_tls:
-        if ca: client.tls_set(ca_certs=ca, tls_version=ssl.PROTOCOL_TLS_CLIENT)
-        else:  client.tls_set_context(ssl.create_default_context())
+        if ca:
+            client.tls_set(ca_certs=ca, tls_version=ssl.PROTOCOL_TLS_CLIENT)
+        else:
+            client.tls_set_context(ssl.create_default_context())
         client.tls_insecure_set(False)
-        if port == 1883: port = 8883
+        if port == 1883:
+            port = 8883
 
     client.on_connect = on_connect
     client.on_disconnect = on_disconnect
     client.on_message = on_message
+    client.on_publish = on_publish
+    client.on_log = on_log
     client.reconnect_delay_set(min_delay=1, max_delay=16)
+
+    client.max_inflight_messages_set(10)   # ค่าเริ่มต้น 20; ลดเพื่อความนิ่ง QoS1
+    client.max_queued_messages_set(1000)   # 0 = ไม่จำกัด; ตั้งไว้กันคิวตันบนเน็ตแกว่ง
+
     client.enable_logger(log)
-    client.connect(host, port, keepalive=60)
+    client.connect(host, port, keepalive=40)  # หรือ 45 ก็ได้
     return client
+
 
 def slot_worker(slot_id: str, idx: int):
     threading.current_thread().name = f"worker-{slot_id}"
     while True:
         action, role = slot_queues[slot_id].get()
         try:
-            if action == "slot": Storage_compartment(idx)
-            elif action == "door": handle_door_unlock(idx)
-            else: publish_warning(slot_id, f"ไม่รู้จักคำสั่ง: {action}")
+            if action == "slot":
+                Storage_compartment(idx)
+            elif action == "door":
+                handle_door_unlock(idx)
+            else:
+                send_warning(slot_id, f"ไม่รู้จักคำสั่ง: {action}")
         except Exception:
             log.exception(f"[worker-{slot_id}] error while handling '{action}'")
-            publish_warning(slot_id, f"เกิดข้อผิดพลาด")
+            send_warning(slot_id, "เกิดข้อผิดพลาด")
         finally:
             slot_queues[slot_id].task_done()
 
@@ -337,26 +420,60 @@ def start_workers():
         t = threading.Thread(target=slot_worker, args=(sid, idx), daemon=True, name=f"worker-{sid}")
         t.start()
 
-def update_all_slots_status():
+def publish_all_slots_status_once():
     for idx, sid in enumerate(SLOT_IDS):
         capacity, is_connected = read_capacity_and_connection(sid)
         is_open = not i2c_is_door_closed(idx)
         slot_status[idx].update({
-            "capacity_mm": capacity, "connection_status": is_connected, "is_open": is_open,
+            "capacity_mm": capacity,
+            "connection_status": is_connected,
+            "is_open": is_open,
         })
         publish_status_idx(idx)
         time.sleep(0.35)
-    threading.Timer(120, update_all_slots_status).start()
+
+_status_updater_started = False
+
+def start_status_updater(interval_s: int = 120):
+    global _status_updater_started
+    if _status_updater_started:
+        return
+    _status_updater_started = True
+
+    def _loop():
+        while True:
+            try:
+                publish_all_slots_status_once()
+            except Exception:
+                log.exception("[status-updater] cycle failed")
+            time.sleep(interval_s)
+
+    t = threading.Thread(target=_loop, daemon=True, name="status-updater")
+    t.start()
+    log.info("✅ Status updater started")
 
 def main():
+    global mqtt_client
     init_mcp()
     init_sensors()
     log_vl53_mapping()
+
+    mqtt_client = build_client()
+    mqtt_client.loop_start()
+
     start_workers()
-    update_all_slots_status()
-    client = build_client()
-    client.loop_forever()
+
+    # ✅ เริ่มตัวอัปเดตสถานะระยะยาวแบบเธรดเดียว
+    start_status_updater(interval_s=120)
+
+    # กัน main thread หลับ
+    try:
+        while True:
+            time.sleep(3600)
+    except KeyboardInterrupt:
+        pass
+
+
 
 if __name__ == "__main__":
     main()
- 
