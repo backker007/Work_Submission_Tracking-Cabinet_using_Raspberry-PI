@@ -1,4 +1,3 @@
-# shared/vl53l0x_init.py
 from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional
@@ -7,6 +6,11 @@ import time
 import logging
 
 log = logging.getLogger("vl53x_init")
+
+# ===== Feature toggles from .env (ค่าเริ่มต้นเปิดไว้ให้ทนเคสค้าง) =====
+ADOPT_STALE = os.getenv("VL53_ADOPT_STALE_ADDR", "1").lower() in ("1","true","yes")
+RECOVER_ON_OPEN_FAIL = os.getenv("VL53_RECOVER_ON_OPEN_FAIL", "1").lower() in ("1","true","yes")
+HOLD_LOW_S = float(os.getenv("VL53_HOLD_LOW_S", "0.20"))
 
 # ===== (Optional) native backend placeholder =====
 try:
@@ -169,7 +173,7 @@ def init_vl53x_four(
 
     # 1) ดึง XSHUT ทั้งหมดลง LOW ก่อน
     xshut.all_low()
-    time.sleep(0.03)
+    time.sleep(max(0.03, HOLD_LOW_S))
 
     # 2) เปิดทีละตัว → ยืนยันเจอที่ 0x29 → สั่งเปลี่ยน address → ยืนยันที่อยู่ใหม่
     assigned: Dict[int, int] = {}
@@ -183,6 +187,13 @@ def init_vl53x_four(
         time.sleep(0.35 + extra_boot_delay_s)
 
         if not _wait_for_addr(i2c, DEFAULT, timeout_s=boot_timeout_s):
+            # กรณีค้างที่แอดเดรสเป้าหมายอยู่แล้ว ให้รับเลี้ยงต่อเลย
+            if ADOPT_STALE and _bus_has_addr(i2c, target_addr):
+                log.warning("idx%d: default 0x%02X missing but target 0x%02X present → adopting", idx, DEFAULT, target_addr)
+                assigned[idx] = target_addr
+                time.sleep(0.05)
+                continue
+
             log.error("idx%d: default 0x%02X not found on bus after power-up", idx, DEFAULT)
             try:
                 xshut.set_low(idx)
@@ -255,8 +266,44 @@ def init_vl53x_four(
                 handle=s1, read=_adafruit_read_factory(s1)
             )
             log.info("idx%d: open@0x%02X OK (reader ready)", idx, target_addr)
+
         except Exception as e:
             log.error("idx%d: open reader at 0x%02X FAILED: %r", idx, target_addr, e)
+
+            if RECOVER_ON_OPEN_FAIL:
+                # 🔁 ฟื้นเฉพาะตัว: power-cycle + ตั้งแอดเดรสใหม่ แล้วลองอีกครั้ง
+                try:
+                    log.warning("idx%d: trying XSHUT power-cycle + reassign...", idx)
+                    xshut.set_low(idx)
+                    time.sleep(max(0.05, HOLD_LOW_S))
+                    xshut.set_high(idx)
+
+                    # รอ default โผล่ แล้วสั่งตั้ง addr ใหม่ (ถ้า adopt ไปแล้ว ข้ามส่วนนี้)
+                    if not ADOPT_STALE or not _bus_has_addr(i2c, target_addr):
+                        if _wait_for_addr(i2c, DEFAULT, timeout_s=max(1.0, boot_timeout_s)):
+                            _ok = _raw_set_address_confirm(
+                                i2c, target_addr,
+                                retries=int(os.getenv("VL53_ADDR_SET_RETRIES", "6")),
+                                gap_s=float(os.getenv("VL53_ADDR_SET_GAP_S", "0.10"))
+                            )
+                            if not _ok:
+                                raise OSError("reassign address after power-cycle failed")
+                        else:
+                            raise OSError("default 0x29 not present after power-cycle")
+
+                    _wait_for_addr(i2c, target_addr, timeout_s=max(1.0, boot_timeout_s))
+                    s2 = _open_reader_with_retries(
+                        i2c, target_addr, timing_budget_us,
+                        retries=max(3, open_retries // 2),
+                        delay_s=max(0.2, open_delay_s)
+                    )
+                    handles[idx] = SensorHandle(
+                        idx=idx, addr=target_addr, backend="adafruit",
+                        handle=s2, read=_adafruit_read_factory(s2)
+                    )
+                    log.info("idx%d: recover@0x%02X OK (reader ready)", idx, target_addr)
+                except Exception as ee:
+                    log.error("idx%d: recover failed: %r", idx, ee)
 
     log.info("==== init_vl53x_four: %d/%d ready ====", len(handles), n)
     return handles

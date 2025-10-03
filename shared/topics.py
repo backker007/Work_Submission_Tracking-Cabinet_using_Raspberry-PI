@@ -92,6 +92,9 @@ INDEX_TO_SLOT = {i: sid for sid, i in SLOT_TO_INDEX.items()}
 # ===== เวลา local สำหรับฟิลด์ time_local =====
 _TIME_TZ     = os.getenv("TIME_TZ", "Asia/Bangkok")
 _TIME_LABEL  = os.getenv("TIME_LABEL", "กรุงเทพฯ")
+ADOPT_STALE = os.getenv("VL53_ADOPT_STALE_ADDR", "1").lower() in ("1","true","yes")
+
+
 
 def _time_local_str() -> str:
     try:
@@ -146,22 +149,25 @@ def get_subscriptions(broad: bool = False):
 
 # ===== Publishers =====
 def publish_status(mqtt_client, payload: dict, slot_id: str):
-    # เติมฟิลด์มาตรฐาน legacy ให้ครบ
     data = dict(payload or {})
     data.setdefault("cupboard_id", CUPBOARD_ID)
     data.setdefault("slot_id", slot_id)
     data.setdefault("time_local", _time_local_str())
-    res = mqtt_client.publish(topic_status(slot_id), json.dumps(data), qos=1, retain=True)
+    res = mqtt_client.publish(
+        topic_status(slot_id),
+        json.dumps(data, ensure_ascii=False),   # ← ตรงนี้
+        qos=1, retain=True
+    )
     return getattr(res, "mid", None)
 
 def publish_warning(mqtt_client, msg: str, slot_id: str, extra: dict | None = None):
-    data = {
-        "cupboard_id": CUPBOARD_ID,
-        "slot_id": slot_id,
-        "message": msg,
-        "time_local": _time_local_str(),
-    }
-    if extra:
-        data.update(extra)
-    res = mqtt_client.publish(topic_warning(slot_id), json.dumps(data), qos=1, retain=False)
+    data = {"cupboard_id": CUPBOARD_ID, "slot_id": slot_id,
+            "message": msg, "time_local": _time_local_str()}
+    if extra: data.update(extra)
+    res = mqtt_client.publish(
+        topic_warning(slot_id),
+        json.dumps(data, ensure_ascii=False),   # ← ตรงนี้
+        qos=1, retain=False
+    )
     return getattr(res, "mid", None)
+

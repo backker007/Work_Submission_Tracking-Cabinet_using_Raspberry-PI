@@ -1,4 +1,3 @@
-# shared/hardware_helpers.py
 # 🔧 รวมฟังก์ชัน/ตัวช่วยที่เกี่ยวกับ I2C, Servo, VL53L0X, MCP23017
 from __future__ import annotations
 import os, time, statistics, logging
@@ -8,8 +7,12 @@ from digitalio import Direction, Pull
 from adafruit_pca9685 import PCA9685
 from adafruit_mcp230xx.mcp23017 import MCP23017
 
+# ✅ นำเข้าให้ครบตามที่ใช้งานจริง (ไม่เปลี่ยน logic)
 from .vl53l0x_init import (
-    init_vl53x_four, read_mm, debug_summary, SensorHandle
+    init_vl53x_four, read_mm, debug_summary, SensorHandle,
+    _wait_for_addr as _vl53_wait_for_addr,
+    _raw_set_address_confirm as _vl53_set_addr,
+    _open_reader_with_retries as _vl53_open_with_retries,
 )
 from .topics import SLOT_IDS  # ใช้กำหนดจำนวนเซ็นเซอร์ตามจำนวน slot
 
@@ -57,6 +60,10 @@ XSHUT_PINS   = [digitalio.DigitalInOut(getattr(board, f"D{gpio}")) for gpio in _
 INIT_ALL_LOW = os.getenv("VL53_INIT_ALL_LOW", "1").lower() in ("1","true","yes")
 BUS_MODE     = os.getenv("VL53_BUS_MODE", "multi").strip().lower()
 
+DOOR_SAMPLES = int(os.getenv("DOOR_SAMPLES", "20"))
+DOOR_SAMPLE_INTERVAL_S = float(os.getenv("DOOR_SAMPLE_INTERVAL_S", "0.03"))
+DOOR_SENSOR_INVERT = os.getenv("DOOR_SENSOR_INVERT", "0").lower() in ("1","true","yes")
+
 print(f"🔌 XSHUT GPIO pins from .env: {_xshut_gpio}")
 
 import threading
@@ -95,8 +102,54 @@ def _open_reader(addr: int):
 def _expected_addr_for(index: int) -> int:
     return (ADDRESS_BASE + index) & 0x7F
 
+def _recover_index_by_xshut(index: int) -> bool:
+    """Power-cycle ผ่าน XSHUT แล้วบังคับตั้งแอดเดรสเป็นค่าเป้าหมาย จากนั้นเปิด reader"""
+    if index >= len(XSHUT_PINS):
+        log.warning(f"recover: no XSHUT pin for index {index}")
+        return False
+
+    target = _expected_addr_for(index)
+    try:
+        # Power-cycle
+        XSHUT_PINS[index].switch_to_output(value=False)
+        time.sleep(max(0.05, float(os.getenv("VL53_HOLD_LOW_S", "0.20"))))
+        XSHUT_PINS[index].value = True
+
+        boot_to = float(os.getenv("VL53_BOOT_TIMEOUT_S", "1.2"))
+
+        # ถ้า default 0x29 โผล่ → ตั้ง addr ใหม่, ไม่งั้นลอง adopt ถ้ามี target อยู่แล้ว
+        if not _vl53_wait_for_addr(shared_i2c, 0x29, timeout_s=max(1.0, boot_to)):
+            if not _vl53_wait_for_addr(shared_i2c, target, timeout_s=0.6):
+                log.warning(f"recover: neither default 0x29 nor target 0x{target:02X} present")
+                return False
+        else:
+            _ok = _vl53_set_addr(
+                shared_i2c, target,
+                retries=int(os.getenv("VL53_ADDR_SET_RETRIES", "6")),
+                gap_s=float(os.getenv("VL53_ADDR_SET_GAP_S", "0.10"))
+            )
+            if not _ok:
+                log.warning("recover: set addr 0x%02X failed", target)
+                return False
+
+        # เปิด reader ด้วย retries
+        s = _vl53_open_with_retries(
+            shared_i2c, target, TIMING_BUDGET_US,
+            retries=int(os.getenv("VL53_OPEN_RETRIES", "8")),
+            delay_s=float(os.getenv("VL53_OPEN_DELAY_S", "0.30"))
+        )
+        h = SensorHandle(idx=index, addr=target, backend="adafruit",
+                         handle=s, read=_make_read(s))
+        with _handles_guard:
+            _vl53_handles[index] = h
+        log.warning(f"⚠️ Recovered index {index} @0x{target:02X} by XSHUT power-cycle")
+        return True
+
+    except Exception as e:
+        log.warning(f"recover index {index} failed: {e}")
+        return False
+
 def _reopen_handle(index: int) -> bool:
-    """เปิด reader ใหม่ให้ index นี้ ถ้ายังไม่มี/หรือพังไป"""
     addr = _expected_addr_for(index)
     try:
         s = _open_reader(addr)
@@ -106,9 +159,9 @@ def _reopen_handle(index: int) -> bool:
         log.warning(f"⚠️ Reopened VL53L0X index {index} @0x{addr:02X}")
         return True
     except Exception as e:
-        log.warning(f"❌ Reopen VL53L0X index {index} @0x{addr:02X} failed: {e}")
-        return False
-    
+        log.warning(f"❌ Soft reopen failed @0x{addr:02X}: {e}; trying XSHUT recovery...")
+        return _recover_index_by_xshut(index)
+
 # =============================================================================
 # SERVO CONTROL
 # =============================================================================
@@ -126,17 +179,26 @@ def move_servo_180(channel: int, angle: int):
 # =============================================================================
 # DOOR SENSOR (MC-38) via MCP23017
 # =============================================================================
-def is_door_reliably_closed(index: int, samples=5, interval=0.01) -> bool:
-    """True = ปิดสนิท (อ่านค่า LOW ได้อย่างสม่ำเสมอ)"""
-    if 8 + index >= len(mcp_pins):
+def _raw_closed(pin) -> bool:
+    # Pull.UP: LOW(False)=CLOSED, HIGH(True)=OPEN
+    closed = (pin.value is False)
+    return (not closed) if DOOR_SENSOR_INVERT else closed
+
+def is_door_reliably_closed(index: int, samples: int = None, interval: float = None) -> bool:
+    """Legacy debounce: ต้องอ่าน 'ปิด' ติดกันทุกครั้งถึงจะถือว่าปิดจริง"""
+    if samples is None: samples = DOOR_SAMPLES
+    if interval is None: interval = DOOR_SAMPLE_INTERVAL_S
+
+    pos = 8 + index
+    if pos >= len(mcp_pins):
         log.error(f"Door sensor index {index} is out of range.")
-        return False  # ปกติถือว่า "เปิด"
-    pin = mcp_pins[8 + index]
-    # Pull.UP → ประตูปิด (แม่เหล็กชิด) จะได้ LOW(False)
-    for _ in range(samples):
-        if pin.value:  # HIGH พบครั้งเดียวถือว่าเปิด
+        return False
+
+    pin = mcp_pins[pos]
+    for _ in range(max(1, samples)):
+        if not _raw_closed(pin):
             return False
-        time.sleep(interval)
+        time.sleep(max(0.001, interval))
     return True
 
 def init_mcp():
@@ -306,12 +368,11 @@ def read_sensor(sensor_index: int) -> int:
         log.error(f"Error reading sensor {sensor_index}: {e}")
         return -1
 
-
 # Utilities for mapping/diagnostics
 def sensor_addr(index: int) -> int | None:
     h = _vl53_handles.get(index)
     return h.addr if h else None
 
 def vl53_address_map() -> dict[int, tuple[int, str]]:
-    # ✅ แก้แล้ว: ใช้ _vl53_handles ให้ถูกต้อง
+    # ✅ ใช้ _vl53_handles ให้ถูกต้อง
     return {i: (h.addr, h.backend) for i, h in _vl53_handles.items()}
