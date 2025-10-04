@@ -202,13 +202,14 @@ def is_door_reliably_closed(index: int, samples: int = None, interval: float = N
     return True
 
 def init_mcp():
-    """กำหนดรีเลย์/สวิตช์ประตู"""
     global mcp, mcp_pins, relay_pins
     mcp = MCP23017(shared_i2c)
+
     relay_pin_nums = [12, 13, 14, 15]
     door_switch_pins = [8, 9, 10, 11]
-
-    mcp_pins = [mcp.get_pin(i) for i in range(16)]
+    
+    mcp_pins.clear()
+    mcp_pins.extend(mcp.get_pin(i) for i in range(16))
     relay_pins.clear()
 
     for pin_num in relay_pin_nums:
@@ -221,7 +222,14 @@ def init_mcp():
     for pin_num in door_switch_pins:
         pin = mcp_pins[pin_num]
         pin.direction = Direction.INPUT
-        pin.pull = Pull.UP
+        # รองรับไลบรารี 2 แบบ (บางเวอร์ชันใช้ pull, บางเวอร์ชันใช้ pullup)
+        try:
+            pin.pull = Pull.UP
+        except Exception:
+            try:
+                pin.pullup = True
+            except Exception:
+                pass
         print(f"  ✅ Door switch pin {pin_num} initialized with Pull-up")
 
     print(f"✅ MCP23017 initialized: {len(relay_pins)} relays, {len(door_switch_pins)} door switches")
