@@ -7,10 +7,19 @@ import logging
 
 log = logging.getLogger("vl53x_init")
 
+__all__ = [
+    # public
+    "SensorHandle", "XshutDriver",
+    "init_vl53x_four", "read_mm", "debug_summary",
+    # used by hardware_helpers (imported with alias)
+    "_wait_for_addr", "_raw_set_address_confirm", "_open_reader_with_retries",
+]
+
 # ===== Feature toggles from .env (ค่าเริ่มต้นเปิดไว้ให้ทนเคสค้าง) =====
 ADOPT_STALE = os.getenv("VL53_ADOPT_STALE_ADDR", "1").lower() in ("1","true","yes")
 RECOVER_ON_OPEN_FAIL = os.getenv("VL53_RECOVER_ON_OPEN_FAIL", "1").lower() in ("1","true","yes")
 HOLD_LOW_S = float(os.getenv("VL53_HOLD_LOW_S", "0.20"))
+I2C_BUS_NUM = int(os.getenv("I2C_BUS_NUM", "1"))  # ใช้เมื่อ fallback smbus2
 
 # ===== (Optional) native backend placeholder =====
 try:
@@ -52,7 +61,15 @@ class XshutDriver:
 
 # ---------- Adafruit helpers ----------
 def _adafruit_open(i2c, addr: int):
-    import adafruit_vl53l0x
+    """
+    เปิดออบเจ็กต์ Adafruit VL53L0X ที่ address ระบุ
+    """
+    try:
+        import adafruit_vl53l0x
+    except Exception as e:
+        raise RuntimeError(
+            "adafruit_vl53l0x not installed — pip install adafruit-circuitpython-vl53l0x"
+        ) from e
     return adafruit_vl53l0x.VL53L0X(i2c, address=addr)
 
 def _adafruit_read_factory(sensor):
@@ -68,6 +85,11 @@ def _adafruit_read_factory(sensor):
 
 # ---------- I2C presence helpers ----------
 def _bus_has_addr(i2c, addr: int) -> bool:
+    """
+    ตรวจว่ามีอุปกรณ์ที่ addr อยู่บนบัสหรือไม่:
+      - ถ้า Blinka I2C มี try_lock(): ใช้ scan ตามปกติ
+      - ถ้าไม่มี try_lock(): fallback เป็นการ probe เบา ๆ ด้วย I2CDevice.write(b"")
+    """
     try:
         if hasattr(i2c, "try_lock"):
             if not i2c.try_lock():
@@ -77,8 +99,17 @@ def _bus_has_addr(i2c, addr: int) -> bool:
                 return addr in lst
             finally:
                 i2c.unlock()
-        # ถ้าไม่มี try_lock (เช่นบาง mock) ให้ถือว่าผ่าน
-        return True
+        # fallback: probe เบา ๆ
+        try:
+            from adafruit_bus_device.i2c_device import I2CDevice
+            with I2CDevice(i2c, addr) as dev:
+                try:
+                    dev.write(b"")  # โยน OSError หากไม่มีการ ACK
+                except OSError:
+                    return False
+            return True
+        except Exception:
+            return False
     except Exception:
         return False
 
@@ -98,7 +129,7 @@ def _raw_set_address_confirm(i2c, new_addr: int, retries: int, gap_s: float) -> 
     def _write_once():
         try:
             from smbus2 import SMBus
-            with SMBus(1) as bus:
+            with SMBus(I2C_BUS_NUM) as bus:
                 bus.write_byte_data(0x29, 0x8A, new_addr & 0x7F)
             return
         except Exception:
@@ -122,6 +153,9 @@ def _raw_set_address_confirm(i2c, new_addr: int, retries: int, gap_s: float) -> 
 # ---------- Reader open (with retries) ----------
 def _open_reader_with_retries(i2c, addr: int, timing_budget_us: int,
                               retries: int = 10, delay_s: float = 0.3):
+    """
+    เปิด reader ด้วยการ retry แบบเว้นช่วง ปรับ timing budget + สั่งโหมดต่อเนื่องถ้าซัพพอร์ต
+    """
     last = None
     for _ in range(max(1, retries)):
         try:
