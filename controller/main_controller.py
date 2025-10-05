@@ -23,32 +23,32 @@ from queue import Queue, Full
 # --- Path & .env ต้องมาก่อน imports ในแพ็กเกจภายใน ---
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from shared.topics import SLOT_IDS, SLOT_TO_INDEX  # noqa: E402
+from shared.topics import SLOT_IDS, SLOT_TO_INDEX  
 
-from dotenv import load_dotenv  # noqa: E402
+from dotenv import load_dotenv  
 load_dotenv(ROOT / ".env")
 
 # --- MQTT client ---
-import paho.mqtt.client as mqtt  # noqa: E402
+import paho.mqtt.client as mqtt  
 
 # --- Project helpers (topics/publish) ---
-from shared.topics import (  # noqa: E402
+from shared.topics import (  
     CUPBOARD_ID, SLOT_IDS, SLOT_TO_INDEX, INDEX_TO_SLOT, BASE,
     get_subscriptions, publish_status, publish_warning, topic_status,
 )
 
 # --- Hardware helpers ---
 # NOTE: เพิ่ม mcp + set_slot_led_* เพื่อใช้กับ read_slot_and_update_led
-from shared.hardware_helpers import (  # noqa: E402
+from shared.hardware_helpers import (  
     init_mcp, init_sensors,
     read_sensor, move_servo_180, is_door_reliably_closed,
     mcp_pins, relay_pins, CHANGE_THRESHOLD, is_slot_full,
     mcp,  # ใช้โดย read_slot_and_update_led
-    set_slot_led_ready, set_slot_led_error,  # เพิ่ม stub ให้ไม่พัง
+    set_slot_led_ready, set_slot_led_error,  
 )
 
 # --- Role helpers ---
-from shared.role_helpers import can_open_slot, can_open_door, is_valid_role  # noqa: E402
+from shared.role_helpers import can_open_slot, can_open_door, is_valid_role  
 
 
 # =============================================================================
@@ -71,7 +71,6 @@ MOTION_INACTIVE_BEFORE_WARN = float(os.getenv("MOTION_INACTIVE_BEFORE_WARN", "5"
 TIME_REPEAT_WARNING = float(os.getenv("TIME_REPEAT_WARNING", "10"))
 SENSOR_STABLE_DURATION = float(os.getenv("SENSOR_STABLE_DURATION", "1.5"))
 SENSOR_CHECK_INTERVAL = float(os.getenv("SENSOR_CHECK_INTERVAL", "0.2"))
-# ทนเคส env เป็นค่าว่างโดยไม่เปลี่ยน logic เดิม
 _SMT = (os.getenv("SENSOR_MOTION_THRESHOLD", "").strip())
 SENSOR_MOTION_THRESHOLD = int(_SMT) if _SMT.isdigit() else CHANGE_THRESHOLD
 
@@ -166,7 +165,7 @@ def read_slot_and_update_led(slot_id: str):
 
     # 2) พยายามอ่าน I2C
     try:
-        distance_mm = read_sensor(idx)  # ← แก้ให้ส่ง index แทน slot_id (บั๊กเดิม)
+        distance_mm = read_sensor(idx)  
         _i2c_fail_counts[slot_id] = 0  # อ่านสำเร็จ รีเซ็ตเคานต์พลาด
 
     except Exception:

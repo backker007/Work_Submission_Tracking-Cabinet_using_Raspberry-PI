@@ -8,11 +8,6 @@ Hardware helpers for Smart Locker
 - MCP23017 (relays + door switches + status LEDs)
 - Smoothing / outlier rejection for distance reads
 - LED helpers set_slot_led_ready / set_slot_led_error for main_controller
-
-ปรับให้เข้ากับ controller/main_controller.py เวอร์ชันล่าสุด:
-- export: init_mcp, init_sensors, read_sensor, move_servo_180,
-          is_door_reliably_closed, mcp_pins, relay_pins, CHANGE_THRESHOLD,
-          is_slot_full, mcp, set_slot_led_ready, set_slot_led_error
 """
 
 from __future__ import annotations
