@@ -131,8 +131,9 @@ def _load_cfg() -> Config:
     mqtt_port = _get_int("MQTT_PORT", 1883)
     mqtt_user = _get_str("MQTT_USERNAME", "")
     mqtt_pass = _get_str("MQTT_PASSWORD", "")
-    mqtt_tls  = _get_bool("MQTT_TLS", False)
-    mqtt_ws   = _get_bool("MQTT_WS", False)
+    # รองรับทั้งชื่อเก่า/ใหม่
+    mqtt_tls  = _get_bool("MQTT_TLS", _get_bool("MQTT_USE_TLS", False))
+    mqtt_ws   = _get_bool("MQTT_WS", _get_bool("MQTT_USE_WEBSOCKET", False))
     mqtt_cid  = _get_str("MQTT_CLIENT_ID", node_id + "-client")
     mqtt_ca   = os.getenv("MQTT_CA", None)
     mqtt_ca   = mqtt_ca.strip() if mqtt_ca else None
@@ -155,10 +156,10 @@ def _load_cfg() -> Config:
     sensor_addrs = _derive_sensor_addrs(n, explicit_addrs, base_addr)
 
     # relay/servo/mcp (ถ้าไม่ได้ตั้งค่าใน .env จะใส่ค่า dummy ยาวเท่า slot)
-    relays = _to_int_list(_parse_list(os.getenv("RELAY_PINS") or "")) or list(range(4, 4 + n))
+    relays = _to_int_list(_parse_list(os.getenv("RELAY_PINS") or "")) or list(range(12, 12 + n))
     servos = _to_int_list(_parse_list(os.getenv("SERVO_CHANNELS") or "")) or list(range(0, n))
-    mcp_reed = _to_int_list(_parse_list(os.getenv("MCP_REED_PINS") or "")) or list(range(0, n))
-    mcp_led  = _to_int_list(_parse_list(os.getenv("MCP_LED_PINS")  or "")) or list(range(4, 4 + n))
+    mcp_reed = _to_int_list(_parse_list(os.getenv("MCP_REED_PINS") or "")) or list(range(8, 8 + n))
+    mcp_led  = _to_int_list(_parse_list(os.getenv("MCP_LED_PINS")  or "")) or list(range(0, n))  # map เองภายหลัง
 
     # --- VL53 mode/tuning (รับทั้งชื่อเก่าและใหม่) ---
     vl53_bus_mode        = _get_str("VL53_BUS_MODE", "multi")
@@ -177,6 +178,7 @@ def _load_cfg() -> Config:
 
     # --- ranges/thresholds ---
     target_min_mm        = _get_int("TARGET_MIN_MM", _get_int("VL53_MIN_MM", 20))
+    target_max_mm        = _5get_int = _get_int  # alias local (เผื่อใช้ซ้ำ)
     target_max_mm        = _get_int("TARGET_MAX_MM", _get_int("VL53_MAX_MM", 300))
     zero_threshold       = _get_int("ZERO_THRESHOLD", 70)
     active_check_iv      = _get_float("ACTIVE_CHECK_INTERVAL", 0.5)

@@ -23,10 +23,30 @@ from queue import Queue, Full
 # --- Path & .env ต้องมาก่อน imports ในแพ็กเกจภายใน ---
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from shared.topics import SLOT_IDS, SLOT_TO_INDEX  # noqa: E402
 
 from dotenv import load_dotenv  # noqa: E402
 load_dotenv(ROOT / ".env")
+
+# ==== [Env Validation & Tunables] ============================================
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+logging.basicConfig(
+    level=getattr(logging, LOG_LEVEL, logging.INFO),
+    format="%(asctime)s %(levelname)s [%(threadName)s] %(message)s",
+)
+log = logging.getLogger("smartlocker")
+
+# กุญแจ .env ที่ต้องมี
+_REQUIRED_VARS = ("CUPBOARD_ID", "MQTT_HOST", "MQTT_PORT")
+_missing = [k for k in _REQUIRED_VARS if not os.getenv(k)]
+if _missing:
+    raise RuntimeError(f"Missing required .env keys: {_missing}")
+
+# Exponential backoff ตอน connect MQTT
+RECONNECT_BASE_S = float(os.getenv("MQTT_RECONNECT_BASE_S", "1.0"))
+RECONNECT_MAX_S = float(os.getenv("MQTT_RECONNECT_MAX_S", "32.0"))
+
+# ขนาดคิวงานต่อช่อง (ตั้งค่า SLOT_QUEUE_MAXSIZE ก่อน ถ้าไม่ตั้งจะใช้ QUEUE_MAXSIZE)
+SLOT_QUEUE_MAXSIZE = int(os.getenv("SLOT_QUEUE_MAXSIZE", os.getenv("QUEUE_MAXSIZE", "200")))
 
 # --- MQTT client ---
 import paho.mqtt.client as mqtt  # noqa: E402
@@ -56,7 +76,6 @@ from shared.role_helpers import can_open_slot, can_open_door, is_valid_role  # n
 # =============================================================================
 ZERO_THRESHOLD = int(os.getenv("ZERO_THRESHOLD", "70"))
 ACTIVE_CHECK_INTERVAL = float(os.getenv("ACTIVE_CHECK_INTERVAL", "0.5"))
-LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
 # โซลินอยด์/รีดสวิตช์
 DOOR_UNLOCK_WINDOW_S = int(os.getenv("DOOR_UNLOCK_WINDOW_S", "10"))     # เวลารอเปิดจริง
@@ -74,12 +93,6 @@ SENSOR_CHECK_INTERVAL = float(os.getenv("SENSOR_CHECK_INTERVAL", "0.2"))
 # ทนเคส env เป็นค่าว่างโดยไม่เปลี่ยน logic เดิม
 _SMT = (os.getenv("SENSOR_MOTION_THRESHOLD", "").strip())
 SENSOR_MOTION_THRESHOLD = int(_SMT) if _SMT.isdigit() else CHANGE_THRESHOLD
-
-logging.basicConfig(
-    level=getattr(logging, LOG_LEVEL, logging.INFO),
-    format="%(asctime)s %(levelname)s [%(threadName)s] %(message)s",
-)
-log = logging.getLogger("smartlocker")
 
 
 # =============================================================================
@@ -106,8 +119,8 @@ slot_status = [{"capacity_mm": 0, "connection_status": True, "is_open": False} f
 # ให้การเข้าถึง I2C/Servo/Door เป็น short critical section
 i2c_lock = threading.RLock()
 
-# คิวคำสั่งต่อ slot
-slot_queues: dict[str, Queue] = {sid: Queue(maxsize=10) for sid in SLOT_IDS}
+# คิวคำสั่งต่อ slot (ใช้ขนาดจาก .env)
+slot_queues: dict[str, Queue] = {sid: Queue(maxsize=SLOT_QUEUE_MAXSIZE) for sid in SLOT_IDS}
 
 # ตัวนับ fail การอ่าน I2C ของแต่ละ slot id
 _i2c_fail_counts = {sid: 0 for sid in SLOT_IDS}
@@ -578,6 +591,7 @@ def build_client():
     สร้างและคอนฟิก MQTT client จากตัวแปร .env:
       - MQTT_HOST, MQTT_PORT, MQTT_USERNAME, MQTT_PASSWORD
       - MQTT_TLS, MQTT_WS, MQTT_CLIENT_ID, MQTT_CA
+    ใช้ exponential backoff ตอน connect หากล้มเหลว
     """
     host = os.getenv("MQTT_HOST")
     port = int(os.getenv("MQTT_PORT"))
@@ -622,7 +636,18 @@ def build_client():
     client.max_queued_messages_set(1000)
 
     client.enable_logger(log)
-    client.connect(host, port, keepalive=40)
+
+    # ---- Connect with exponential backoff ----
+    delay = RECONNECT_BASE_S
+    while True:
+        try:
+            client.connect(host, port, keepalive=40)
+            break
+        except Exception as e:
+            log.warning("MQTT connect failed: %s (retry in %.1fs)", e, delay)
+            time.sleep(delay)
+            delay = min(RECONNECT_MAX_S, delay * 2)
+
     return client
 
 
