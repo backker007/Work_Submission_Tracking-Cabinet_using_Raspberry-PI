@@ -1,0 +1,65 @@
+diff --git a/controller/main_controller.py b/controller/main_controller.py
+--- a/controller/main_controller.py
++++ b/controller/main_controller.py
+@@
+ from dotenv import load_dotenv
+ load_dotenv(ROOT / ".env")
+ 
++# ==== [ADDED] Environment validation & runtime tuning ==================================
++import os, time, logging, queue as _queue
++LOG = logging.getLogger("main_controller")
++
++# Tunables (can be overridden in .env)
++RECONNECT_BASE_S = float(os.getenv("MQTT_RECONNECT_BASE_S", "1.0"))
++RECONNECT_MAX_S  = float(os.getenv("MQTT_RECONNECT_MAX_S",  "32.0"))
++QUEUE_MAXSIZE    = int(os.getenv("QUEUE_MAXSIZE", "200"))
++
++# Hard requirements for runtime
++_REQUIRED_VARS = ("NODE_ID", "CUPBOARD_ID", "MQTT_HOST", "MQTT_PORT")
++_missing = [k for k in _REQUIRED_VARS if not os.getenv(k)]
++if _missing:
++    raise RuntimeError(f"Missing required .env keys: {_missing}")
++
++# Keep host/port available if any code needs them here
++MQTT_HOST = os.getenv("MQTT_HOST")
++MQTT_PORT = int(os.getenv("MQTT_PORT"))
++
++# --- Bounded Queue shim ---------------------------------------------------------------
++# Any later `Queue()` constructed in this module will default to QUEUE_MAXSIZE
++# even if the original code called Queue() without maxsize.
++class _BoundedQueue(_queue.Queue):
++    def __init__(self, maxsize=0):
++        super().__init__(QUEUE_MAXSIZE if (maxsize in (0, None)) else maxsize)
++
++# Rebind name `Queue` in this module to the bounded version, preserve Full
++Queue = _BoundedQueue
++Full  = _queue.Full
++
++# --- MQTT connect monkey-patch with exponential backoff -------------------------------
++def _patch_mqtt_connect():
++    import paho.mqtt.client as mqtt  # local import to ensure availability
++    _orig_connect = mqtt.Client.connect
++
++    def _connect_with_backoff(self, host, port, keepalive=60, *args, **kwargs):
++        delay = RECONNECT_BASE_S
++        while True:
++            try:
++                return _orig_connect(self, host, port, keepalive, *args, **kwargs)
++            except Exception as e:
++                LOG.warning("MQTT connect failed: %s (retry in %.1fs)", e, delay)
++                time.sleep(delay)
++                delay = min(RECONNECT_MAX_S, delay * 2)
++
++    mqtt.Client.connect = _connect_with_backoff
++
+@@
+ # --- MQTT client ---
+ import paho.mqtt.client as mqtt
++_patch_mqtt_connect()  # [ADDED] enable exponential backoff for all subsequent connects
+@@
+ from shared.topics import (
+     CUPBOARD_ID, SLOT_IDS, SLOT_TO_INDEX, INDEX_TO_SLOT, BASE,
+     get_subscriptions, publish_status, publish_warning, topic_status,
+ )
+@@
+ from shared.role_helpers import can_open_slot, can_open_door,
