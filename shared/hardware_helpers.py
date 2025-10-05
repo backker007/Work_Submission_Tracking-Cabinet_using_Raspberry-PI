@@ -8,6 +8,11 @@ Hardware helpers for Smart Locker
 - MCP23017 (relays + door switches + status LEDs)
 - Smoothing / outlier rejection for distance reads
 - LED helpers set_slot_led_ready / set_slot_led_error for main_controller
+
+ปรับให้เข้ากับ controller/main_controller.py เวอร์ชันล่าสุด:
+- export: init_mcp, init_sensors, read_sensor, move_servo_180,
+          is_door_reliably_closed, mcp_pins, relay_pins, CHANGE_THRESHOLD,
+          is_slot_full, mcp, set_slot_led_ready, set_slot_led_error
 """
 
 from __future__ import annotations
@@ -19,6 +24,7 @@ import statistics
 from collections import deque
 from typing import Dict, List, Optional
 
+# ---- HW imports (Blinka) ----------------------------------------------------
 import board
 import busio
 import digitalio
@@ -26,7 +32,7 @@ from digitalio import Direction, Pull
 from adafruit_pca9685 import PCA9685
 from adafruit_mcp230xx.mcp23017 import MCP23017
 
-# NOTE: ใช้ relative import เพราะไฟล์นี้อยู่ใต้แพ็กเกจ shared
+# NOTE: relative import because this file is under 'shared'
 from .vl53l0x_init import (
     init_vl53x_four,
     read_mm,
@@ -36,7 +42,7 @@ from .vl53l0x_init import (
     _raw_set_address_confirm as _vl53_set_addr,
     _open_reader_with_retries as _vl53_open_with_retries,
 )
-from .topics import SLOT_IDS  # ใช้จำนวน slot เป็นหลักในการตั้ง address/LED
+from .topics import SLOT_IDS  # จำนวนช่องใช้งาน
 
 log = logging.getLogger("hw")
 
@@ -84,6 +90,9 @@ BUS_MODE = os.getenv("VL53_BUS_MODE", "multi").strip().lower()  # multi | mux | 
 DOOR_SAMPLES = int(os.getenv("DOOR_SAMPLES", "20"))
 DOOR_SAMPLE_INTERVAL_S = float(os.getenv("DOOR_SAMPLE_INTERVAL_S", "0.03"))
 DOOR_SENSOR_INVERT = os.getenv("DOOR_SENSOR_INVERT", "0").lower() in ("1", "true", "yes")
+
+# Servo dwell / auto-off
+SERVO_SETTLE_S = float(os.getenv("SERVO_SETTLE_S", "0.7"))  # เวลารอให้หมุนจบก่อนตัด PWM
 
 # ===== Distance-based Slot 'Full' detection =====
 DEFAULT_FULL_THRESHOLD_MM = int(os.getenv("DEFAULT_FULL_THRESHOLD_MM", "40"))
@@ -219,10 +228,12 @@ def angle_to_duty_cycle(angle: float) -> int:
 
 def move_servo_180(channel: int, angle: int) -> None:
     """ขยับเซอร์โวแล้วตัด PWM เพื่อลดความร้อน (hold by gear)."""
+    angle = max(0, min(180, int(angle)))
     duty = angle_to_duty_cycle(angle)
     log.debug(f"Servo CH{channel} → {angle}° (duty={duty})")
     pca.channels[channel].duty_cycle = duty
-    time.sleep(0.7)  # รอให้ขยับจบ
+    # รอให้หมุนจบก่อนตัด PWM (ปรับได้จาก SERVO_SETTLE_S)
+    time.sleep(max(0.2, SERVO_SETTLE_S))
     pca.channels[channel].duty_cycle = 0
 
 # =============================================================================

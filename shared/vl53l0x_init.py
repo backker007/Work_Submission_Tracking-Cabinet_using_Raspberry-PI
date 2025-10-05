@@ -1,3 +1,4 @@
+# shared/vl53l0x_init.py
 from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional
@@ -15,17 +16,18 @@ __all__ = [
     "_wait_for_addr", "_raw_set_address_confirm", "_open_reader_with_retries",
 ]
 
-# ===== Feature toggles from .env (ค่าเริ่มต้นเปิดไว้ให้ทนเคสค้าง) =====
-ADOPT_STALE = os.getenv("VL53_ADOPT_STALE_ADDR", "1").lower() in ("1","true","yes")
-RECOVER_ON_OPEN_FAIL = os.getenv("VL53_RECOVER_ON_OPEN_FAIL", "1").lower() in ("1","true","yes")
-HOLD_LOW_S = float(os.getenv("VL53_HOLD_LOW_S", "0.20"))
-I2C_BUS_NUM = int(os.getenv("I2C_BUS_NUM", "1"))  # ใช้เมื่อ fallback smbus2
+# ===== Feature toggles / params from .env =====
+ADOPT_STALE           = os.getenv("VL53_ADOPT_STALE_ADDR", "1").lower() in ("1", "true", "yes")
+RECOVER_ON_OPEN_FAIL  = os.getenv("VL53_RECOVER_ON_OPEN_FAIL", "1").lower() in ("1", "true", "yes")
+HOLD_LOW_S            = float(os.getenv("VL53_HOLD_LOW_S", "0.20"))
+I2C_BUS_NUM           = int(os.getenv("I2C_BUS_NUM", "1"))
+CONTINUOUS_READ       = os.getenv("VL53_CONTINUOUS", "1").lower() in ("1", "true", "yes")
 
-# ===== (Optional) native backend placeholder =====
+# ===== (Optional) native backend placeholder (reserved for future) =====
 try:
     import VL53L0X as vl53_native  # type: ignore[import-not-found]
 except Exception:
-    vl53_native = None  # ไม่ได้ใช้ในเวอร์ชันนี้ แต่เก็บไว้เผื่ออนาคต
+    vl53_native = None
 
 # ===== Public handle =====
 @dataclass
@@ -166,14 +168,15 @@ def _open_reader_with_retries(i2c, addr: int, timing_budget_us: int,
                     s.measurement_timing_budget = timing_budget_us
                 except Exception:
                     pass
-            # สั่งโหมดอ่านต่อเนื่องถ้าซัพพอร์ต
-            for m in ("start_continuous", "startContinuous"):
-                if hasattr(s, m):
-                    try:
-                        getattr(s, m)()
-                    except Exception:
-                        pass
-                    break
+            # สั่งโหมดอ่านต่อเนื่องเมื่อเปิดใช้
+            if CONTINUOUS_READ:
+                for m in ("start_continuous", "startContinuous"):
+                    if hasattr(s, m):
+                        try:
+                            getattr(s, m)()
+                        except Exception:
+                            pass
+                        break
             return s
         except Exception as e:
             last = e
