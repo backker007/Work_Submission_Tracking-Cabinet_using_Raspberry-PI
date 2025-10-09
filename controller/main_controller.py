@@ -23,7 +23,6 @@ from queue import Queue, Full
 # --- Path & .env ต้องมาก่อน imports ในแพ็กเกจภายใน ---
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from shared.topics import SLOT_IDS, SLOT_TO_INDEX  # noqa: E402
 
 from dotenv import load_dotenv  
 load_dotenv(ROOT / ".env")

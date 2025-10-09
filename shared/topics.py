@@ -1,8 +1,9 @@
 
 # shared/topics.py
 from __future__ import annotations
-import json, os
+import json, os 
 from datetime import datetime, timezone, timedelta
+from typing import List
 try:
     # Python 3.9+ มาตรฐาน
     from zoneinfo import ZoneInfo  # type: ignore
@@ -14,7 +15,7 @@ from .config import CFG
 # ===== Config =====
 BASE         = CFG.MQTT_BASE_TOPIC            # "smartlocker"
 CUPBOARD_ID  = CFG.CUPBOARD_ID                # เช่น "C01"
-NODE_ID      = CFG.NODE_ID or CUPBOARD_ID     # กันไว้ให้เท่ากัน
+NODE_ID      = CFG.NODE_ID or CUPBOARD_ID    
 SLOT_IDS     = CFG.SLOT_IDS
 
 SLOT_TO_INDEX = {sid: i for i, sid in enumerate(SLOT_IDS)}
