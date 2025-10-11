@@ -229,12 +229,16 @@ def angle_to_duty_cycle(angle: float) -> int:
 def move_servo_180(channel: int, angle: int) -> None:
     """ขยับเซอร์โวแล้วตัด PWM เพื่อลดความร้อน (hold by gear)."""
     angle = max(0, min(180, int(angle)))
+
+    # 🔁 กลับทิศทาง (สลับ 0↔180)
+    angle = 180 - angle
+
     duty = angle_to_duty_cycle(angle)
     log.debug(f"Servo CH{channel} → {angle}° (duty={duty})")
     pca.channels[channel].duty_cycle = duty
-    # รอให้หมุนจบก่อนตัด PWM (ปรับได้จาก SERVO_SETTLE_S)
     time.sleep(max(0.2, SERVO_SETTLE_S))
     pca.channels[channel].duty_cycle = 0
+
 
 # =============================================================================
 # DOOR SENSOR (MC-38) via MCP23017
