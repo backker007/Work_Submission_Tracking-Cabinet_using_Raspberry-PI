@@ -24,7 +24,7 @@ from queue import Queue, Full
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from dotenv import load_dotenv  
+from dotenv import load_dotenv
 load_dotenv(ROOT / ".env")
 
 # ==== [Env Validation & Tunables] ============================================
@@ -49,26 +49,27 @@ RECONNECT_MAX_S = float(os.getenv("MQTT_RECONNECT_MAX_S", "32.0"))
 SLOT_QUEUE_MAXSIZE = int(os.getenv("SLOT_QUEUE_MAXSIZE", os.getenv("QUEUE_MAXSIZE", "200")))
 
 # --- MQTT client ---
-import paho.mqtt.client as mqtt  
+import paho.mqtt.client as mqtt  # type: ignore
 
 # --- Project helpers (topics/publish) ---
-from shared.topics import (  
+from shared.topics import (  # type: ignore
     CUPBOARD_ID, SLOT_IDS, SLOT_TO_INDEX, INDEX_TO_SLOT, BASE,
     get_subscriptions, publish_status, publish_warning, topic_status,
 )
 
 # --- Hardware helpers ---
-# NOTE: เพิ่ม mcp + set_slot_led_* เพื่อใช้กับ read_slot_and_update_led
-from shared.hardware_helpers import (  
+# NOTE: เพิ่ม mcp + set_slot_led_* และ vl53_address_map เพื่อ debug
+from shared.hardware_helpers import (  # type: ignore
     init_mcp, init_sensors,
     read_sensor, move_servo_180, is_door_reliably_closed,
     mcp_pins, relay_pins, CHANGE_THRESHOLD, is_slot_full,
-    mcp,  # ใช้โดย read_slot_and_update_led
-    set_slot_led_ready, set_slot_led_error,  
+    mcp,
+    set_slot_led_ready, set_slot_led_error,
+    vl53_address_map,
 )
 
 # --- Role helpers ---
-from shared.role_helpers import can_open_slot, can_open_door, is_valid_role  
+from shared.role_helpers import can_open_slot, can_open_door, is_valid_role  # type: ignore
 
 
 # =============================================================================
@@ -93,6 +94,18 @@ SENSOR_CHECK_INTERVAL = float(os.getenv("SENSOR_CHECK_INTERVAL", "0.2"))
 _SMT = (os.getenv("SENSOR_MOTION_THRESHOLD", "").strip())
 SENSOR_MOTION_THRESHOLD = int(_SMT) if _SMT.isdigit() else CHANGE_THRESHOLD
 
+# ค่าช่วง mm → %
+EMPTY_MM = float(os.getenv("EMPTY_MM", "200"))
+FULL_MM  = float(os.getenv("FULL_MM",  "80"))
+
+def mm_to_percent(mm_corr: int | None) -> int | None:
+    """แปลงระยะเป็น % ความจุแบบ linear ระหว่าง FULL_MM..EMPTY_MM"""
+    if mm_corr is None or mm_corr < 0:
+        return None
+    denom = max(1.0, (EMPTY_MM - FULL_MM))
+    pct = round(((EMPTY_MM - float(mm_corr)) / denom) * 100.0)
+    return max(0, min(100, pct))
+
 
 # =============================================================================
 # LOG HELPERS
@@ -113,7 +126,7 @@ def log_dbg(msg: str) -> None:
 mqtt_client: mqtt.Client | None = None
 
 # โครงสร้างสถานะของแต่ละ slot (index ตาม SLOT_IDS)
-slot_status = [{"capacity_mm": 0, "connection_status": True, "is_open": False} for _ in SLOT_IDS]
+slot_status = [{"capacity_mm": 0, "capacity_percent": None, "connection_status": True, "is_open": False} for _ in SLOT_IDS]
 
 # ให้การเข้าถึง I2C/Servo/Door เป็น short critical section
 i2c_lock = threading.RLock()
@@ -171,31 +184,27 @@ def read_slot_and_update_led(slot_id: str):
     if not _internet_ok:
         set_slot_led_error(mcp, idx)
         try:
-            _ = read_sensor(idx)  # optional: เก็บค่าเผื่อ debug (แก้เป็น idx)
+            _ = read_sensor(idx)  # optional: เก็บค่าเผื่อ debug
         except Exception:
             pass
         return None
 
     # 2) พยายามอ่าน I2C
     try:
-        distance_mm = read_sensor(idx)  
+        distance_mm = read_sensor(idx)
         _i2c_fail_counts[slot_id] = 0  # อ่านสำเร็จ รีเซ็ตเคานต์พลาด
 
     except Exception:
         # อ่านพลาด → นับ fail และตัดสินใจ LED
         _i2c_fail_counts[slot_id] += 1
         if _i2c_fail_counts[slot_id] >= FAIL_THRESHOLD:
-            # ✅ เงื่อนไขที่ต้องการ: I2C หลุด ⇒ แดง
             set_slot_led_error(mcp, idx)
-        # ถ้าพลาดยังไม่ถึง threshold จะคงสถานะไฟเดิมไว้
         return None
 
     # 3) อ่านได้แล้ว — เช็ค “ช่องเต็ม”
     if is_slot_full(slot_id, distance_mm):
-        # ✅ ช่องเต็ม ⇒ แดง
         set_slot_led_error(mcp, idx)
     else:
-        # พร้อมใช้งาน ⇒ เขียว
         set_slot_led_ready(mcp, idx)
 
     return distance_mm
@@ -294,6 +303,9 @@ def Storage_compartment(index: int) -> None:
         i2c_move_servo_180(index, 180)
         log_event(f"🔄 เปิดมอเตอร์ช่อง {INDEX_TO_SLOT[index]} (→ 180°)")
 
+        # quiet window หลังขยับเซอร์โว
+        time.sleep(0.25)
+
         # baseline เสถียร (สูงสุด 5s)
         initial, deadline = -1, time.time() + 5
         while initial <= 0 and time.time() < deadline:
@@ -342,6 +354,7 @@ def Storage_compartment(index: int) -> None:
             elif state == "close_servo":
                 i2c_move_servo_180(index, 0)
                 log_event(f"🔒 ปิดมอเตอร์ช่อง {INDEX_TO_SLOT[index]} (← 0°)")
+                time.sleep(0.25)  # quiet window ก่อนอ่านสรุป
 
                 capacity = _read_mm_stable(index, duration_s=0.8)
                 is_connected = (capacity != -1)
@@ -349,6 +362,7 @@ def Storage_compartment(index: int) -> None:
 
                 slot_status[index].update({
                     "capacity_mm": capacity if capacity != -1 else slot_status[index]["capacity_mm"],
+                    "capacity_percent": mm_to_percent(None if capacity == -1 else capacity),
                     "connection_status": is_connected,
                     "is_open": is_open,
                 })
@@ -459,9 +473,11 @@ def handle_door_unlock(index: int) -> None:
         publish_warning_idx(index, "ประตูถูกล็อกแล้ว")
 
         # 6) อ่านค่าเสถียรสรุปสถานะ
+        time.sleep(0.25)  # quiet window หลังตัดรีเลย์
         final_value = _read_mm_stable(index, duration_s=SENSOR_STABLE_DURATION)
         slot_status[index].update({
             "capacity_mm": final_value if final_value != -1 else slot_status[index]["capacity_mm"],
+            "capacity_percent": mm_to_percent(None if final_value == -1 else final_value),
             "connection_status": (final_value != -1),
             "is_open": not i2c_is_door_closed(index),
         })
@@ -691,6 +707,7 @@ def publish_all_slots_status_once() -> None:
         is_open = not i2c_is_door_closed(idx)
         slot_status[idx].update({
             "capacity_mm": capacity if capacity != -1 else slot_status[idx]["capacity_mm"],
+            "capacity_percent": mm_to_percent(None if capacity == -1 else capacity),
             "connection_status": is_connected,
             "is_open": is_open,
         })
@@ -730,12 +747,18 @@ def main() -> None:
     init_mcp()
     init_sensors()
 
+    # log address map เพื่อ debug 0x30..0x33
+    try:
+        log.info("VL53 address map: %s", vl53_address_map())
+    except Exception:
+        pass
+
     mqtt_client = build_client()
     mqtt_client.loop_start()
 
     start_workers()
     # ตั้งค่า default 30 นาทีตามที่คุณใช้
-    start_status_updater(interval_s=1800, initial_delay_s=3.0)
+    start_status_updater(interval_s=10, initial_delay_s=3.0)
 
     try:
         while True:

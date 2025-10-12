@@ -12,13 +12,15 @@ Hardware helpers for Smart Locker
 ปรับให้เข้ากับ controller/main_controller.py เวอร์ชันล่าสุด:
 - export: init_mcp, init_sensors, read_sensor, move_servo_180,
           is_door_reliably_closed, mcp_pins, relay_pins, CHANGE_THRESHOLD,
-          is_slot_full, mcp, set_slot_led_ready, set_slot_led_error
+          is_slot_full, mcp, set_slot_led_ready, set_slot_led_error,
+          vl53_address_map, sensor_addr
 """
 
 from __future__ import annotations
 
 import os
 import time
+import json
 import logging
 import statistics
 from collections import deque
@@ -63,8 +65,9 @@ relay_pins: List = []   # เก็บเฉพาะพินที่เป็
 # =============================================================================
 # ENV Config (จูนได้จาก .env)
 # =============================================================================
-TARGET_MIN_MM = int(os.getenv("TARGET_MIN_MM", "20"))
-TARGET_MAX_MM = int(os.getenv("TARGET_MAX_MM", "30"))
+# ระยะใช้งานจริงของตู้ (ค่า default จูนให้ตรง use-case; ปรับได้ใน .env)
+TARGET_MIN_MM = int(os.getenv("TARGET_MIN_MM", "80"))   # <80 => ตีเป็น 'แนบชิด/เต็ม' = 0
+TARGET_MAX_MM = int(os.getenv("TARGET_MAX_MM", "300"))
 
 TIMING_BUDGET_US = int(os.getenv("VL53_BUDGET_US", "20000"))
 VL53_BOOT_DELAY_S = float(os.getenv("VL53_BOOT_DELAY_S", "0.35"))
@@ -73,11 +76,22 @@ VL53_ADDR_SET_RETRIES = int(os.getenv("VL53_ADDR_SET_RETRIES", "4"))
 VL53_ADDR_SET_GAP_S = float(os.getenv("VL53_ADDR_SET_GAP_S", "0.08"))
 VL53_ALLOW_ADAFRUIT = os.getenv("VL53_ALLOW_ADAFRUIT", "1").lower() in ("1", "true", "yes")
 
+# ฟิลเตอร์
 SMOOTH_WINDOW = int(os.getenv("VL53_SMOOTH_WINDOW", "5"))
 OUTLIER_MM = int(os.getenv("VL53_OUTLIER_MM", "15"))
 CHANGE_THRESHOLD = int(os.getenv("CHANGE_THRESHOLD", "5"))
 
+# โหมดอ่านต่อเนื่อง / ดีเลย์ระหว่างเซ็นเซอร์
+VL53_CONTINUOUS = os.getenv("VL53_CONTINUOUS", "0").lower() in ("1", "true", "yes")
+INTER_SENSOR_DELAY_S = float(os.getenv("VL53_INTER_DELAY_S", "0.015"))
+
 ADDRESS_BASE = int(os.getenv("VL53_BASE_ADDR", "0x30"), 16)
+
+# ออฟเซ็ตต่อช่อง (JSON จาก .env) เช่น {"SC001":47,"SC002":0,"SC003":68,"SC004":25}
+try:
+    _OFFSETS = json.loads(os.getenv("VL53_OFFSETS", "{}"))
+except Exception:
+    _OFFSETS = {}
 
 # XSHUT GPIO พิมพ์เลขขา GPIO ตามบอร์ด (เช่น 17 หมายถึง board.D17)
 _xshut_env = os.getenv("VL53_XSHUT_PINS", "17")
@@ -120,6 +134,7 @@ _handles_guard = threading.RLock()
 _vl53_handles: Dict[int, SensorHandle] = {}  # index -> handle
 buffers: List[deque] = []
 last_values: List[Optional[int]] = []
+_last_read_ts: List[float] = []  # สำหรับ inter-sensor delay
 
 def _make_read(sensor):
     """Wrap .range เป็นฟังก์ชันอ่านค่าแบบ int|None เพื่อใช้กับ SensorHandle."""
@@ -143,13 +158,15 @@ def _open_reader(addr: int):
             s.measurement_timing_budget = TIMING_BUDGET_US
         except Exception:
             pass
-    for m in ("start_continuous", "startContinuous"):
-        if hasattr(s, m):
-            try:
-                getattr(s, m)()
-            except Exception:
-                pass
-            break
+    # เริ่ม continuous เฉพาะเมื่อเปิดใช้ผ่าน .env
+    if VL53_CONTINUOUS:
+        for m in ("start_continuous", "startContinuous"):
+            if hasattr(s, m):
+                try:
+                    getattr(s, m)()
+                except Exception:
+                    pass
+                break
     return s
 
 def _expected_addr_for(index: int) -> int:
@@ -230,7 +247,7 @@ def move_servo_180(channel: int, angle: int) -> None:
     """ขยับเซอร์โวแล้วตัด PWM เพื่อลดความร้อน (hold by gear)."""
     angle = max(0, min(180, int(angle)))
 
-    # 🔁 กลับทิศทาง (สลับ 0↔180)
+    # 🔁 กลับทิศทาง (สลับ 0↔180) ให้เข้ากับกลไกที่ติดตั้ง
     angle = 180 - angle
 
     duty = angle_to_duty_cycle(angle)
@@ -238,7 +255,6 @@ def move_servo_180(channel: int, angle: int) -> None:
     pca.channels[channel].duty_cycle = duty
     time.sleep(max(0.2, SERVO_SETTLE_S))
     pca.channels[channel].duty_cycle = 0
-
 
 # =============================================================================
 # DOOR SENSOR (MC-38) via MCP23017
@@ -440,10 +456,11 @@ def init_sensors() -> None:
     - เปิดทุกตัวค้างไว้ (XSHUT=HIGH) เพื่อให้ address ไม่หาย
     - ตั้ง timing budget ตาม .env
     """
-    global _vl53_handles, buffers, last_values
+    global _vl53_handles, buffers, last_values, _last_read_ts
 
     buffers.clear()
     last_values.clear()
+    _last_read_ts.clear()
 
     init_xshuts()
     if BUS_MODE != "multi":
@@ -477,16 +494,18 @@ def init_sensors() -> None:
         for p in XSHUT_PINS:
             p.value = True
 
-    # เตรียมบัฟเฟอร์กรอง
+    # เตรียมบัฟเฟอร์กรอง + ประทับเวลาอ่าน (สำหรับ inter-sensor delay)
     for _ in range(len(_vl53_handles)):
         buffers.append(deque(maxlen=SMOOTH_WINDOW))
         last_values.append(None)
+        _last_read_ts.append(0.0)
 
     print("VL53 summary:", debug_summary(_vl53_handles))
     print(f"✅ เริ่มต้นเซ็นเซอร์สำเร็จ: {len(_vl53_handles)}/{sensor_count} ตัว (pins={_xshut_gpio})")
 
     if not _vl53_handles and sensor_count > 0:
         print("⚠️ ยังไม่พบเซ็นเซอร์ → ตรวจสาย/ไฟ/ที่อยู่ I2C")
+
 
 def _apply_outlier_reject(sensor_index: int, mm_value: int) -> int:
     """ปัด outlier เทียบ median ล่าสุดในบัฟเฟอร์ (±OUTLIER_MM)."""
@@ -511,6 +530,15 @@ def _smooth_and_stabilize(sensor_index: int, mm_value: int) -> int:
         last_values[sensor_index] = stable
     return last_values[sensor_index]
 
+def _apply_offset_by_slot_index(sensor_index: int, mm_value: int) -> int:
+    """หักออฟเซ็ตตาม slot_id จาก .env (VL53_OFFSETS)"""
+    try:
+        slot_id = SLOT_IDS[sensor_index]
+        off = int(_OFFSETS.get(slot_id, 0))
+    except Exception:
+        off = 0
+    return int(mm_value) - off
+
 def _clamp_to_range(mm_value: int) -> int:
     """
     ถ้าต่ำกว่า TARGET_MIN_MM คืน 0 (ถือว่าแนบชิด/เต็ม)
@@ -524,7 +552,16 @@ def read_sensor(sensor_index: int) -> int:
     """
     อ่าน VL53 (index 0..N-1) คืนค่าเป็น mm (int) หรือ -1 ถ้าอ่านไม่ได้
     จะลอง reopen/XSHUT recover เมื่อ handle หายหรืออ่านพัง
+    - บังคับ inter-sensor delay ต่อ index
+    - ฟิลเตอร์ outlier + median + hysteresis
+    - หัก offset ต่อช่องจาก .env แล้วค่อย clamp
     """
+    # inter-sensor delay (ต่อ 'ตัว' ไม่ใช่รวม)
+    if sensor_index < len(_last_read_ts):
+        dt = time.monotonic() - _last_read_ts[sensor_index]
+        if dt < INTER_SENSOR_DELAY_S:
+            time.sleep(INTER_SENSOR_DELAY_S - dt)
+
     with _handles_guard:
         h_exists = sensor_index in _vl53_handles
     if not h_exists:
@@ -538,13 +575,25 @@ def read_sensor(sensor_index: int) -> int:
             if _reopen_handle(sensor_index):
                 raw = read_mm(_vl53_handles, sensor_index)
         if raw is None or raw <= 0 or raw > 2000:
+            # stamp time แม้ fail เพื่อลดการ loop ถี่เกิน
+            if sensor_index < len(_last_read_ts):
+                _last_read_ts[sensor_index] = time.monotonic()
             return -1
 
         filtered = _apply_outlier_reject(sensor_index, int(raw))
         stable = _smooth_and_stabilize(sensor_index, filtered)
-        return _clamp_to_range(stable)
+        # หัก offset ต่อช่อง แล้วค่อย clamp
+        stable = _apply_offset_by_slot_index(sensor_index, stable)
+        val = _clamp_to_range(stable)
+
+        if sensor_index < len(_last_read_ts):
+            _last_read_ts[sensor_index] = time.monotonic()
+        return val
+
     except Exception as e:
         log.error(f"Error reading sensor {sensor_index}: {e}")
+        if sensor_index < len(_last_read_ts):
+            _last_read_ts[sensor_index] = time.monotonic()
         return -1
 
 # =============================================================================
