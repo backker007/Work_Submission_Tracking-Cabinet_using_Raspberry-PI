@@ -1,4 +1,5 @@
 # controller/main_controller.py
+# -*- coding: utf-8 -*-
 # =============================================================================
 # Smart Locker Main Controller
 # - MQTT command handler
@@ -58,14 +59,14 @@ from shared.topics import (  # type: ignore
 )
 
 # --- Hardware helpers ---
-# NOTE: เพิ่ม mcp + set_slot_led_* และ vl53_address_map เพื่อ debug
+# NOTE: เพิ่ม internet_ok และ vl53_address_map เพื่อ debug และ LED override
 from shared.hardware_helpers import (  # type: ignore
     init_mcp, init_sensors,
     read_sensor, move_servo_180, is_door_reliably_closed,
     mcp_pins, relay_pins, CHANGE_THRESHOLD, is_slot_full,
     mcp,
     set_slot_led_ready, set_slot_led_error,
-    vl53_address_map,
+    vl53_address_map, internet_ok,
 )
 
 # --- Role helpers ---
@@ -138,9 +139,6 @@ slot_queues: dict[str, Queue] = {sid: Queue(maxsize=SLOT_QUEUE_MAXSIZE) for sid 
 _i2c_fail_counts = {sid: 0 for sid in SLOT_IDS}
 FAIL_THRESHOLD = 3  # อ่านพลาดติดกันกี่ครั้งถึงถือว่าหลุด
 
-# ธงจาก network watchdog เดิม (เผื่อเชื่อมต่อกับ thread ตรวจเน็ต)
-_internet_ok = True  # อัปเดตจากเธรดตรวจเน็ต
-
 
 # =============================================================================
 # I²C SHORT-LOCK HELPERS
@@ -169,20 +167,22 @@ def i2c_set_relay(index: int, value: bool) -> None:
         relay_pins[index].value = bool(value)
 
 
+# =============================================================================
+# LED-aware read helper
+# =============================================================================
 def read_slot_and_update_led(slot_id: str):
     """
     อ่านระยะของช่อง (โดยอิง slot_id → index) แล้วอัปเดตไฟ LED:
-      - เน็ตหลุด: แดง
+      - อินเทอร์เน็ต/ MQTT host ต่อไม่ได้: ไฟแดง (override โดย hardware_helpers อยู่แล้ว)
       - I2C fail ถึง threshold: แดง
       - ช่องเต็ม (<= threshold): แดง
       - ปกติ: เขียว
-    คืนค่า distance_mm หรือ None ถ้าอ่านไม่ได้/ไม่จำเป็นต้องคืน
+    คืนค่า distance_mm หรือ None ถ้าอ่านไม่ได้
     """
     idx = SLOT_TO_INDEX[slot_id]  # 0..3
 
-    # 1) ถ้าเน็ตหลุด: ทุกช่องแดง (คุมที่ watchdog อยู่แล้ว)
-    if not _internet_ok:
-        set_slot_led_error(mcp, idx)
+    # 1) ถ้าเน็ตหลุด: ปล่อยให้ hardware_helpers คุมไฟเป็นแดงรวมอยู่แล้ว
+    if not internet_ok():
         try:
             _ = read_sensor(idx)  # optional: เก็บค่าเผื่อ debug
         except Exception:
@@ -193,9 +193,7 @@ def read_slot_and_update_led(slot_id: str):
     try:
         distance_mm = read_sensor(idx)
         _i2c_fail_counts[slot_id] = 0  # อ่านสำเร็จ รีเซ็ตเคานต์พลาด
-
     except Exception:
-        # อ่านพลาด → นับ fail และตัดสินใจ LED
         _i2c_fail_counts[slot_id] += 1
         if _i2c_fail_counts[slot_id] >= FAIL_THRESHOLD:
             set_slot_led_error(mcp, idx)
@@ -300,7 +298,7 @@ def Storage_compartment(index: int) -> None:
       4) Publish สถานะสรุป
     """
     try:
-        i2c_move_servo_180(index, 180)
+        i2c_move_servo_180(index, 90)
         log_event(f"🔄 เปิดมอเตอร์ช่อง {INDEX_TO_SLOT[index]} (→ 180°)")
 
         # quiet window หลังขยับเซอร์โว
@@ -700,13 +698,18 @@ def start_workers() -> None:
 # STATUS UPDATER (ตัวเดียว ไม่ซ้ำ)
 # =============================================================================
 def publish_all_slots_status_once() -> None:
-    """อ่านค่าทุกช่องแบบเสถียร แล้ว publish สถานะ 1 รอบ."""
+    """อ่านค่าทุกช่องแบบเสถียร แล้ว publish สถานะ 1 รอบ + อัปเดต LED ให้ตรงตามเงื่อนไข."""
     for idx, sid in enumerate(SLOT_IDS):
+        # ให้ตัวช่วย read_slot_and_update_led เป็นตัวกำกับ LED (พร้อม network override)
+        dmm = read_slot_and_update_led(sid)
+
+        # อ่านเสถียรเพื่อนำไปคำนวณ/แสดงผล (ถ้าอยากเร็วขึ้น สามารถใช้ dmm แทนได้)
         capacity = _read_mm_stable(idx, duration_s=0.5)
         is_connected = (capacity != -1)
         is_open = not i2c_is_door_closed(idx)
+
         slot_status[idx].update({
-            "capacity_mm": capacity if capacity != -1 else slot_status[idx]["capacity_mm"],
+            "capacity_mm": capacity if capacity != -1 else (dmm if dmm is not None else slot_status[idx]["capacity_mm"]),
             "capacity_percent": mm_to_percent(None if capacity == -1 else capacity),
             "connection_status": is_connected,
             "is_open": is_open,
@@ -753,12 +756,18 @@ def main() -> None:
     except Exception:
         pass
 
+    # log network state (hardware_helpers มี watchdog ของตัวเองอยู่แล้ว)
+    try:
+        log.info("Network initial (hardware_helpers): %s", "ONLINE" if internet_ok() else "OFFLINE")
+    except Exception:
+        pass
+
     mqtt_client = build_client()
     mqtt_client.loop_start()
 
     start_workers()
-    # ตั้งค่า default 30 นาทีตามที่คุณใช้
-    start_status_updater(interval_s=10, initial_delay_s=3.0)
+    # กำหนดช่วง publish อัตโนมัติ (120 วินาที)
+    start_status_updater(interval_s=120, initial_delay_s=3.0)
 
     try:
         while True:

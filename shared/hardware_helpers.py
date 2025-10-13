@@ -23,6 +23,8 @@ import time
 import json
 import logging
 import statistics
+import socket
+import threading
 from collections import deque
 from typing import Dict, List, Optional
 
@@ -103,6 +105,11 @@ BUS_MODE = os.getenv("VL53_BUS_MODE", "multi").strip().lower()  # multi | mux | 
 
 DOOR_SAMPLES = int(os.getenv("DOOR_SAMPLES", "20"))
 DOOR_SAMPLE_INTERVAL_S = float(os.getenv("DOOR_SAMPLE_INTERVAL_S", "0.03"))
+
+# การอ่านค่าประตู (เดิม): ปิด=LOW (GND wiring + internal pull-up)
+# เพิ่มโหมด VCC wiring: ปิด=HIGH (ต้องมี external pull-down)
+DOOR_WIRING = os.getenv("DOOR_WIRING", "GND").strip().upper()  # "GND" | "VCC"
+DOOR_USE_PULLUP = os.getenv("DOOR_USE_PULLUP", "1").lower() in ("1", "true", "yes")
 DOOR_SENSOR_INVERT = os.getenv("DOOR_SENSOR_INVERT", "0").lower() in ("1", "true", "yes")
 
 # Servo dwell / auto-off
@@ -119,22 +126,32 @@ def is_slot_full(slot_id: str, distance_mm: Optional[float]) -> bool:
     thr = SLOT_FULL_THRESHOLD_MM.get(slot_id, DEFAULT_FULL_THRESHOLD_MM)
     return distance_mm <= thr
 
+# ===== Network watchdog / LED policy =====
+NET_WATCHDOG = os.getenv("NET_WATCHDOG", "1").lower() in ("1", "true", "yes")
+NET_CHECK_HOST = os.getenv("NET_CHECK_HOST") or os.getenv("MQTT_HOST") or "8.8.8.8"
+NET_CHECK_PORT = int(os.getenv("NET_CHECK_PORT") or os.getenv("MQTT_PORT") or "53")
+NET_CHECK_INTERVAL_S = float(os.getenv("NET_CHECK_INTERVAL_S", "3.0"))
+NET_CONNECT_TIMEOUT_S = float(os.getenv("NET_CONNECT_TIMEOUT_S", "1.2"))
+LED_BOOT_DEFAULT = os.getenv("LED_BOOT_DEFAULT", "ready").strip().lower()  # ready|error|off
+LED_ONLINE_DEFAULT_READY = os.getenv("LED_ONLINE_DEFAULT_READY", "1").lower() in ("1", "true", "yes")
+NET_OFFLINE_BLINK = os.getenv("NET_OFFLINE_BLINK", "1").lower() in ("1", "true", "yes")
+NET_OFFLINE_BLINK_S = float(os.getenv("NET_OFFLINE_BLINK_S", "0.6"))
+
 print(f"🔌 XSHUT GPIO pins from .env: {_xshut_gpio}")
 
 # =============================================================================
 # VL53L0X Backends
 # =============================================================================
-import threading
-try:
-    import adafruit_vl53l0x  # type: ignore
-except Exception:
-    adafruit_vl53l0x = None
-
 _handles_guard = threading.RLock()
 _vl53_handles: Dict[int, SensorHandle] = {}  # index -> handle
 buffers: List[deque] = []
 last_values: List[Optional[int]] = []
 _last_read_ts: List[float] = []  # สำหรับ inter-sensor delay
+
+try:
+    import adafruit_vl53l0x  # type: ignore
+except Exception:
+    adafruit_vl53l0x = None
 
 def _make_read(sensor):
     """Wrap .range เป็นฟังก์ชันอ่านค่าแบบ int|None เพื่อใช้กับ SensorHandle."""
@@ -261,10 +278,15 @@ def move_servo_180(channel: int, angle: int) -> None:
 # =============================================================================
 def _raw_closed(pin) -> bool:
     """
-    Pull.UP: LOW(False)=CLOSED, HIGH(True)=OPEN
-    ถ้า DOOR_SENSOR_INVERT=1 ให้กลับด้านอีกที
+    อ่านสถานะ 'ปิด' ของสวิตช์ประตูตามรูปแบบเดินสาย
+    - โหมด GND (ค่าเดิม): ใช้ Pull-up ภายใน → ปิด=LOW(False)
+    - โหมด VCC: ต้องมี external pull-down → ปิด=HIGH(True)
+    DOOR_SENSOR_INVERT=1 จะกลับด้านผลลัพธ์อีกชั้น
     """
-    closed = (pin.value is False)
+    if DOOR_WIRING == "VCC":
+        closed = (pin.value is True)   # ปิด=HIGH
+    else:
+        closed = (pin.value is False)  # ปิด=LOW (GND wiring + pull-up)
     return (not closed) if DOOR_SENSOR_INVERT else closed
 
 def is_door_reliably_closed(index: int, samples: Optional[int] = None,
@@ -307,12 +329,28 @@ def _led_write(pin, on: bool) -> None:
         return
     pin.value = on if _LED_ACTIVE_HIGH else (not on)
 
+def _set_led_pair(index: int, ready_on: bool, error_on: bool) -> None:
+    try:
+        pr = _led_ready_pinobjs[index] if index < len(_led_ready_pinobjs) else None
+        pe = _led_error_pinobjs[index] if index < len(_led_error_pinobjs) else None
+        _led_write(pr, ready_on)
+        _led_write(pe, error_on)
+    except Exception as e:
+        log.debug(f"_set_led_pair({index}) ignored: {e}")
+
+def _set_all_leds(ready_on: bool, error_on: bool) -> None:
+    for i in range(len(_led_ready_pinobjs)):
+        _set_led_pair(i, ready_on, error_on)
+
 def set_slot_led_ready(mcp_obj: Optional[MCP23017], index: int) -> None:
     """
     เปิดไฟ 'พร้อมใช้งาน' ของช่อง index และปิดไฟ 'ผิดพลาด'
-    - main_controller จะเรียกฟังก์ชันนี้โดยส่ง mcp มา หรือใช้ global ก็ได้
+    หมายเหตุ: ถ้า watchdog จับว่าออฟไลน์ ไฟจะถูก override เป็น Error
     """
     try:
+        if not _network_online:
+            _set_led_pair(index, False, True)
+            return
         pin_ready = _led_ready_pinobjs[index] if index < len(_led_ready_pinobjs) else None
         pin_error = _led_error_pinobjs[index] if index < len(_led_error_pinobjs) else None
         _led_write(pin_ready, True)
@@ -330,6 +368,80 @@ def set_slot_led_error(mcp_obj: Optional[MCP23017], index: int) -> None:
     except Exception as e:
         log.debug(f"set_slot_led_error({index}) ignored: {e}")
 
+def _led_boot_default() -> None:
+    """
+    กำหนดสถานะไฟทันทีหลังบูต:
+      - ถ้าออนไลน์: ทำตาม LED_BOOT_DEFAULT (ready|error|off)
+      - ถ้าออฟไลน์: ไฟแดง (หรือปล่อยให้ watchdog กระพริบ)
+    """
+    if _network_online:
+        if LED_BOOT_DEFAULT == "ready":
+            _set_all_leds(True, False)
+        elif LED_BOOT_DEFAULT == "error":
+            _set_all_leds(False, True)
+        else:
+            _set_all_leds(False, False)
+    else:
+        _set_all_leds(False, True)
+
+# =============================================================================
+# Network/MQTT watchdog (ภายใน hardware_helpers)
+# =============================================================================
+_network_online = True
+_net_thread_started = False
+
+def internet_ok() -> bool:
+    """คืน True ถ้าตรวจเจอว่าออนไลน์ (โฮสต์/พอร์ตปลายทางต่อได้)."""
+    return _network_online
+
+def _tcp_connect_ok(host: str, port: int, timeout: float) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except Exception:
+        return False
+
+def _apply_network_led_state(online: bool) -> None:
+    """บังคับ LED รวมทั้งตู้เมื่อสถานะเน็ตเปลี่ยน."""
+    if not online:
+        _set_all_leds(False, True)
+    else:
+        _set_all_leds(LED_ONLINE_DEFAULT_READY, False)
+
+def _net_watchdog_loop():
+    global _network_online
+    blink = False
+    while True:
+        ok = _tcp_connect_ok(NET_CHECK_HOST, NET_CHECK_PORT, NET_CONNECT_TIMEOUT_S)
+        if ok != _network_online:
+            _network_online = ok
+            log.info("🌐 Network state changed: %s", "ONLINE" if ok else "OFFLINE")
+            _apply_network_led_state(ok)
+            blink = (NET_OFFLINE_BLINK and not ok)
+        # กระพริบไฟแดงเมื่อออฟไลน์
+        if blink:
+            _set_all_leds(False, True)   # ON
+            time.sleep(NET_OFFLINE_BLINK_S)
+            _set_all_leds(False, False)  # OFF
+            time.sleep(NET_OFFLINE_BLINK_S)
+        else:
+            time.sleep(NET_CHECK_INTERVAL_S)
+
+def _maybe_start_network_watchdog():
+    global _net_thread_started
+    if _net_thread_started:
+        return
+    t = threading.Thread(target=_net_watchdog_loop, daemon=True, name="net-watchdog")
+    t.start()
+    _net_thread_started = True
+
+def _refresh_network_state_once():
+    """ตรวจครั้งเดียว เพื่อให้สถานะเริ่มต้นตรงความจริงก่อนสตาร์ทเธรด."""
+    global _network_online
+    ok = _tcp_connect_ok(NET_CHECK_HOST, NET_CHECK_PORT, NET_CONNECT_TIMEOUT_S)
+    _network_online = ok
+    log.info("🌐 Network initial: %s (%s:%s)", "ONLINE" if ok else "OFFLINE", NET_CHECK_HOST, NET_CHECK_PORT)
+
 # =============================================================================
 # MCP23017 init
 # =============================================================================
@@ -337,7 +449,7 @@ def init_mcp() -> None:
     """
     สร้างออบเจกต์ MCP23017 และตั้งพินใช้งาน
     - รีเลย์: 12, 13, 14, 15 (OUTPUT, OFF)
-    - สวิทช์ประตู: 8, 9, 10, 11 (INPUT, Pull-up)
+    - สวิทช์ประตู: 8, 9, 10, 11 (INPUT, Pull ตาม DOOR_WIRING/DOOR_USE_PULLUP)
     - LED: จาก .env SLOT_LED_READY_PINS / SLOT_LED_ERROR_PINS (OUTPUT, OFF)
     """
     global mcp, mcp_pins, relay_pins, _led_ready_pinobjs, _led_error_pinobjs
@@ -357,19 +469,31 @@ def init_mcp() -> None:
         relay_pins.append(pin)
         print(f"  ✅ Relay pin {pin_num} initialized (OFF)")
 
-    # Door switches (8..11) เป็น INPUT + Pull-up
+    # Door switches (8..11) → INPUT + (Pull ตาม config)
     for pin_num in (8, 9, 10, 11):
         pin = mcp_pins[pin_num]
         pin.direction = Direction.INPUT
-        # รองรับไลบรารี 2 แบบ (บางเวอร์ชันใช้ pull, บางเวอร์ชันใช้ pullup)
+        # ตั้งค่า Pull:
+        # - ถ้า DOOR_WIRING=GND และเปิดใช้ pull-up → เปิด Pull.UP ภายใน
+        # - ถ้า DOOR_WIRING=VCC → ปิด pull-up ภายใน (ต้องมี external pull-down)
         try:
-            pin.pull = Pull.UP
+            if DOOR_WIRING == "GND" and DOOR_USE_PULLUP:
+                pin.pull = Pull.UP
+            else:
+                try:
+                    pin.pull = None
+                except Exception:
+                    try:
+                        pin.pullup = False
+                    except Exception:
+                        pass
         except Exception:
+            # fallback ไลบรารีรุ่นเก่า
             try:
-                pin.pullup = True
+                pin.pullup = (DOOR_WIRING == "GND" and DOOR_USE_PULLUP)
             except Exception:
                 pass
-        print(f"  ✅ Door switch pin {pin_num} initialized (Pull-up)")
+        print(f"  ✅ Door switch pin {pin_num} initialized (wiring={DOOR_WIRING}, pullup={'ON' if (DOOR_WIRING=='GND' and DOOR_USE_PULLUP) else 'OFF'})")
 
     # Status LEDs (READY/ERROR) -> OUTPUT, OFF
     _led_ready_pinobjs = []
@@ -399,6 +523,14 @@ def init_mcp() -> None:
         _led_error_pinobjs.append(ep)
 
     print(f"✅ MCP23017 initialized: {len(relay_pins)} relays, 4 door switches, {len(_led_ready_pinobjs)} LED-ready, {len(_led_error_pinobjs)} LED-error")
+
+    # ===== อัปเดตสถานะเน็ตครั้งแรก + ตั้งไฟเริ่มต้นหลังบูต =====
+    _refresh_network_state_once()
+    _led_boot_default()
+
+    # ===== เริ่ม network watchdog (จะคุมไฟเมื่อออฟไลน์) =====
+    if NET_WATCHDOG:
+        _maybe_start_network_watchdog()
 
 # =============================================================================
 # XSHUT helpers
@@ -435,7 +567,7 @@ def _make_xshut_driver() -> _IdxDriver:
     return _IdxDriver(XSHUT_PINS)
 
 def init_xshuts() -> None:
-    """เตรียม XSHUT ทั้งหมดเป็น LOW (multi-device) หรือข้ามเมื่อใช้ MUX."""
+    """เตรียม XSHUT ทั้งหมดเป็น LOW (multi-device) หรือข้ามเมื่อใช้ MUX)."""
     pins_str = ",".join(str(p) for p in _xshut_gpio)
     if BUS_MODE == "mux":
         print("✅ MUX mode: skip XSHUT (handled by TCA9548A)")
@@ -505,7 +637,6 @@ def init_sensors() -> None:
 
     if not _vl53_handles and sensor_count > 0:
         print("⚠️ ยังไม่พบเซ็นเซอร์ → ตรวจสาย/ไฟ/ที่อยู่ I2C")
-
 
 def _apply_outlier_reject(sensor_index: int, mm_value: int) -> int:
     """ปัด outlier เทียบ median ล่าสุดในบัฟเฟอร์ (±OUTLIER_MM)."""
