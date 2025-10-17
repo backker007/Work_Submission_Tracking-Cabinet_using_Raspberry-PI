@@ -298,7 +298,7 @@ def Storage_compartment(index: int) -> None:
       4) Publish สถานะสรุป
     """
     try:
-        i2c_move_servo_180(index, 90)
+        i2c_move_servo_180(index, 80)
         log_event(f"🔄 เปิดมอเตอร์ช่อง {INDEX_TO_SLOT[index]} (→ 180°)")
 
         # quiet window หลังขยับเซอร์โว
@@ -767,7 +767,7 @@ def main() -> None:
 
     start_workers()
     # กำหนดช่วง publish อัตโนมัติ (120 วินาที)
-    start_status_updater(interval_s=120, initial_delay_s=3.0)
+    start_status_updater(interval_s=10, initial_delay_s=3.0)
 
     try:
         while True:
