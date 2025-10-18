@@ -8,13 +8,8 @@ Hardware helpers for Smart Locker
 - MCP23017 (relays + door switches + status LEDs)
 - Smoothing / outlier rejection for distance reads
 - LED helpers set_slot_led_ready / set_slot_led_error for main_controller
-
-ปรับให้เข้ากับ controller/main_controller.py เวอร์ชันล่าสุด:
-- export: init_mcp, init_sensors, read_sensor, move_servo_180,
-          is_door_reliably_closed, mcp_pins, relay_pins, CHANGE_THRESHOLD,
-          is_slot_full, mcp, set_slot_led_ready, set_slot_led_error,
-          vl53_address_map, sensor_addr
 """
+
 
 from __future__ import annotations
 
@@ -71,7 +66,8 @@ relay_pins: List = []   # เก็บเฉพาะพินที่เป็
 TARGET_MIN_MM = int(os.getenv("TARGET_MIN_MM", "80"))   # <80 => ตีเป็น 'แนบชิด/เต็ม' = 0
 TARGET_MAX_MM = int(os.getenv("TARGET_MAX_MM", "300"))
 
-TIMING_BUDGET_US = int(os.getenv("VL53_BUDGET_US", "20000"))
+# ✅ FIX: เพิ่ม timing budget เป็น 60ms (จาก 20ms) เพื่อความแม่นยำสูงขึ้น
+TIMING_BUDGET_US = int(os.getenv("VL53_BUDGET_US", "60000"))  # เดิม 20000
 VL53_BOOT_DELAY_S = float(os.getenv("VL53_BOOT_DELAY_S", "0.35"))
 VL53_BOOT_TIMEOUT_S = float(os.getenv("VL53_BOOT_TIMEOUT_S", "1.2"))
 VL53_ADDR_SET_RETRIES = int(os.getenv("VL53_ADDR_SET_RETRIES", "4"))
@@ -81,11 +77,15 @@ VL53_ALLOW_ADAFRUIT = os.getenv("VL53_ALLOW_ADAFRUIT", "1").lower() in ("1", "tr
 # ฟิลเตอร์
 SMOOTH_WINDOW = int(os.getenv("VL53_SMOOTH_WINDOW", "5"))
 OUTLIER_MM = int(os.getenv("VL53_OUTLIER_MM", "15"))
-CHANGE_THRESHOLD = int(os.getenv("CHANGE_THRESHOLD", "5"))
+
+# ✅ FIX: ลด threshold เหลือ 3mm (จาก 5mm) เพื่อให้ค่าเปลี่ยนเร็วขึ้น
+CHANGE_THRESHOLD = int(os.getenv("CHANGE_THRESHOLD", "3"))  # เดิม 5
 
 # โหมดอ่านต่อเนื่อง / ดีเลย์ระหว่างเซ็นเซอร์
 VL53_CONTINUOUS = os.getenv("VL53_CONTINUOUS", "0").lower() in ("1", "true", "yes")
-INTER_SENSOR_DELAY_S = float(os.getenv("VL53_INTER_DELAY_S", "0.015"))
+
+# ✅ FIX: เพิ่ม inter-sensor delay ให้เท่ากับ timing budget (60ms)
+INTER_SENSOR_DELAY_S = float(os.getenv("VL53_INTER_DELAY_S", "0.070"))  # เดิม 0.015
 
 ADDRESS_BASE = int(os.getenv("VL53_BASE_ADDR", "0x30"), 16)
 
@@ -137,7 +137,20 @@ LED_ONLINE_DEFAULT_READY = os.getenv("LED_ONLINE_DEFAULT_READY", "1").lower() in
 NET_OFFLINE_BLINK = os.getenv("NET_OFFLINE_BLINK", "1").lower() in ("1", "true", "yes")
 NET_OFFLINE_BLINK_S = float(os.getenv("NET_OFFLINE_BLINK_S", "0.6"))
 
+# ✅ NEW: Health check configuration
+HEALTH_CHECK_ENABLED = os.getenv("VL53_HEALTH_CHECK", "1").lower() in ("1", "true", "yes")
+HEALTH_CHECK_INTERVAL_S = float(os.getenv("VL53_HEALTH_CHECK_INTERVAL_S", "60.0"))
+HEALTH_CHECK_TIMEOUT_S = float(os.getenv("VL53_HEALTH_CHECK_TIMEOUT_S", "2.0"))
+
+# ✅ NEW: Cross-talk mitigation
+XSHUT_SEQUENTIAL_READ = os.getenv("VL53_XSHUT_SEQUENTIAL", "1").lower() in ("1", "true", "yes")
+XSHUT_OFF_DELAY_MS = float(os.getenv("VL53_XSHUT_OFF_DELAY_MS", "5.0"))  # หน่วง ms ก่อนปิด XSHUT
+
 print(f"🔌 XSHUT GPIO pins from .env: {_xshut_gpio}")
+print(f"⚙️  TIMING_BUDGET_US: {TIMING_BUDGET_US} µs")
+print(f"⚙️  INTER_SENSOR_DELAY_S: {INTER_SENSOR_DELAY_S} s")
+print(f"⚙️  CHANGE_THRESHOLD: {CHANGE_THRESHOLD} mm")
+print(f"⚙️  XSHUT_SEQUENTIAL_READ: {XSHUT_SEQUENTIAL_READ}")
 
 # =============================================================================
 # VL53L0X Backends
@@ -147,6 +160,13 @@ _vl53_handles: Dict[int, SensorHandle] = {}  # index -> handle
 buffers: List[deque] = []
 last_values: List[Optional[int]] = []
 _last_read_ts: List[float] = []  # สำหรับ inter-sensor delay
+
+# ✅ NEW: Fail counter สำหรับ auto-recovery
+_sensor_fail_counts: Dict[int, int] = {}
+SENSOR_FAIL_THRESHOLD = int(os.getenv("SENSOR_FAIL_THRESHOLD", "3"))
+
+# ✅ NEW: Recovery lock เพื่อป้องกัน recovery พร้อมกัน
+_recovery_locks: Dict[int, threading.Lock] = {}
 
 try:
     import adafruit_vl53l0x  # type: ignore
@@ -189,16 +209,28 @@ def _open_reader(addr: int):
 def _expected_addr_for(index: int) -> int:
     return (ADDRESS_BASE + index) & 0x7F
 
+# ✅ NEW: ปรับปรุง recovery mechanism
 def _recover_index_by_xshut(index: int) -> bool:
     """
     Power-cycle ผ่าน XSHUT แล้วพยายามตั้ง address เป้าหมาย → เปิด reader สำเร็จคืน True
+    ✅ เพิ่ม: Thread-safe, retry logic, logging
     """
     if index >= len(XSHUT_PINS):
         log.warning(f"recover: no XSHUT pin for index {index}")
         return False
 
-    target = _expected_addr_for(index)
+    # ป้องกัน concurrent recovery
+    if index not in _recovery_locks:
+        _recovery_locks[index] = threading.Lock()
+    
+    if not _recovery_locks[index].acquire(blocking=False):
+        log.warning(f"recover: index {index} already in recovery, skipping")
+        return False
+
     try:
+        target = _expected_addr_for(index)
+        log.warning(f"🔄 Starting recovery for sensor index {index} (target=0x{target:02X})")
+        
         # 1) Power-cycle
         XSHUT_PINS[index].switch_to_output(value=False)
         time.sleep(max(0.05, float(os.getenv("VL53_HOLD_LOW_S", "0.20"))))
@@ -211,6 +243,7 @@ def _recover_index_by_xshut(index: int) -> bool:
             if not _vl53_wait_for_addr(shared_i2c, target, timeout_s=0.6):
                 log.warning(f"recover: neither 0x29 nor target 0x{target:02X} present")
                 return False
+            log.info(f"recover: adopting existing address 0x{target:02X}")
         else:
             _ok = _vl53_set_addr(
                 shared_i2c, target,
@@ -231,12 +264,18 @@ def _recover_index_by_xshut(index: int) -> bool:
                          handle=s, read=_make_read(s))
         with _handles_guard:
             _vl53_handles[index] = h
-        log.warning(f"⚠️ Recovered index {index} @0x{target:02X} by XSHUT")
+        
+        # รีเซ็ต fail counter
+        _sensor_fail_counts[index] = 0
+        
+        log.warning(f"✅ Recovered index {index} @0x{target:02X} by XSHUT")
         return True
 
     except Exception as e:
-        log.warning(f"recover index {index} failed: {e}")
+        log.error(f"❌ recover index {index} failed: {e}")
         return False
+    finally:
+        _recovery_locks[index].release()
 
 def _reopen_handle(index: int) -> bool:
     """พยายามเปิด reader ใหม่แบบ soft ก่อน ถ้าไม่ได้ค่อย XSHUT recovery."""
@@ -246,11 +285,33 @@ def _reopen_handle(index: int) -> bool:
         h = SensorHandle(idx=index, addr=addr, backend="adafruit", handle=s, read=_make_read(s))
         with _handles_guard:
             _vl53_handles[index] = h
+        _sensor_fail_counts[index] = 0
         log.warning(f"⚠️ Reopened VL53L0X index {index} @0x{addr:02X}")
         return True
     except Exception as e:
         log.warning(f"❌ Soft reopen failed @0x{addr:02X}: {e}; try XSHUT...")
         return _recover_index_by_xshut(index)
+
+# ✅ NEW: Auto-recovery wrapper
+def _auto_recover_if_needed(index: int) -> bool:
+    """
+    ตรวจสอบ fail counter และทำ auto-recovery ถ้าจำเป็น
+    คืน True ถ้าฟื้นสำเร็จหรือยังไม่ถึง threshold
+    """
+    if index not in _sensor_fail_counts:
+        _sensor_fail_counts[index] = 0
+    
+    if _sensor_fail_counts[index] < SENSOR_FAIL_THRESHOLD:
+        return True
+    
+    log.warning(f"⚠️ Sensor {index} failed {SENSOR_FAIL_THRESHOLD} times, attempting auto-recovery...")
+    
+    if _reopen_handle(index):
+        log.info(f"✅ Auto-recovery successful for sensor {index}")
+        return True
+    else:
+        log.error(f"❌ Auto-recovery failed for sensor {index}")
+        return False
 
 # =============================================================================
 # SERVO CONTROL
@@ -443,6 +504,52 @@ def _refresh_network_state_once():
     log.info("🌐 Network initial: %s (%s:%s)", "ONLINE" if ok else "OFFLINE", NET_CHECK_HOST, NET_CHECK_PORT)
 
 # =============================================================================
+# ✅ NEW: Health Check Thread
+# =============================================================================
+_health_thread_started = False
+
+def _health_check_loop():
+    """
+    เธรดตรวจสอบสุขภาพของ sensor ทั้งหมดเป็นระยะ
+    - อ่านค่าทดสอบแต่ละตัว
+    - ถ้าอ่านไม่ได้ติดต่อกันหลายครั้ง → trigger recovery
+    """
+    log.info("✅ Health check thread started (interval=%ds)", HEALTH_CHECK_INTERVAL_S)
+    
+    while True:
+        time.sleep(HEALTH_CHECK_INTERVAL_S)
+        
+        for index in range(len(_vl53_handles)):
+            try:
+                # ทดสอบอ่านค่า
+                test_val = read_mm(_vl53_handles, index)
+                
+                if test_val is None or test_val <= 0 or test_val > 2000:
+                    _sensor_fail_counts[index] = _sensor_fail_counts.get(index, 0) + 1
+                    log.warning(f"Health check: sensor {index} returned invalid value (fail_count={_sensor_fail_counts[index]})")
+                    
+                    # ถ้าเกิน threshold → recovery
+                    if _sensor_fail_counts[index] >= SENSOR_FAIL_THRESHOLD:
+                        log.warning(f"🔧 Health check triggering recovery for sensor {index}")
+                        _auto_recover_if_needed(index)
+                else:
+                    # อ่านได้ปกติ → รีเซ็ต counter
+                    _sensor_fail_counts[index] = 0
+                    
+            except Exception as e:
+                log.error(f"Health check error for sensor {index}: {e}")
+                _sensor_fail_counts[index] = _sensor_fail_counts.get(index, 0) + 1
+
+def _maybe_start_health_check():
+    global _health_thread_started
+    if _health_thread_started or not HEALTH_CHECK_ENABLED:
+        return
+    t = threading.Thread(target=_health_check_loop, daemon=True, name="health-check")
+    t.start()
+    _health_thread_started = True
+    log.info("🏥 Health check monitoring enabled")
+
+# =============================================================================
 # MCP23017 init
 # =============================================================================
 def init_mcp() -> None:
@@ -588,11 +695,12 @@ def init_sensors() -> None:
     - เปิดทุกตัวค้างไว้ (XSHUT=HIGH) เพื่อให้ address ไม่หาย
     - ตั้ง timing budget ตาม .env
     """
-    global _vl53_handles, buffers, last_values, _last_read_ts
+    global _vl53_handles, buffers, last_values, _last_read_ts, _sensor_fail_counts
 
     buffers.clear()
     last_values.clear()
     _last_read_ts.clear()
+    _sensor_fail_counts.clear()
 
     init_xshuts()
     if BUS_MODE != "multi":
@@ -627,16 +735,21 @@ def init_sensors() -> None:
             p.value = True
 
     # เตรียมบัฟเฟอร์กรอง + ประทับเวลาอ่าน (สำหรับ inter-sensor delay)
-    for _ in range(len(_vl53_handles)):
+    for i in range(len(_vl53_handles)):
         buffers.append(deque(maxlen=SMOOTH_WINDOW))
         last_values.append(None)
         _last_read_ts.append(0.0)
+        _sensor_fail_counts[i] = 0
+        _recovery_locks[i] = threading.Lock()
 
     print("VL53 summary:", debug_summary(_vl53_handles))
     print(f"✅ เริ่มต้นเซ็นเซอร์สำเร็จ: {len(_vl53_handles)}/{sensor_count} ตัว (pins={_xshut_gpio})")
 
     if not _vl53_handles and sensor_count > 0:
         print("⚠️ ยังไม่พบเซ็นเซอร์ → ตรวจสาย/ไฟ/ที่อยู่ I2C")
+    
+    # ✅ เริ่ม health check thread
+    _maybe_start_health_check()
 
 def _apply_outlier_reject(sensor_index: int, mm_value: int) -> int:
     """ปัด outlier เทียบ median ล่าสุดในบัฟเฟอร์ (±OUTLIER_MM)."""
@@ -649,14 +762,25 @@ def _apply_outlier_reject(sensor_index: int, mm_value: int) -> int:
             return int(m + (OUTLIER_MM if mm_value > m else -OUTLIER_MM))
     return mm_value
 
+# ✅ FIX: ลด hysteresis (optional: สามารถปิดได้ด้วยการ comment if statement)
 def _smooth_and_stabilize(sensor_index: int, mm_value: int) -> int:
-    """median smoothing + state hold (เปลี่ยนเมื่อ Δ ≥ CHANGE_THRESHOLD)."""
+    """
+    median smoothing + state hold (เปลี่ยนเมื่อ Δ ≥ CHANGE_THRESHOLD)
+    ✅ ปรับ: ลด threshold เหลือ 3mm และเพิ่มโหมด "no-hysteresis" (ถ้าต้องการ real-time)
+    """
     if sensor_index >= len(buffers):
         return mm_value
     buffers[sensor_index].append(mm_value)
     stable = int(statistics.median(buffers[sensor_index]))
+    
     if sensor_index >= len(last_values):
         return stable
+    
+    # ✅ ถ้าต้องการ real-time (ไม่มี hysteresis) ให้ uncomment บรรทัดนี้:
+    # last_values[sensor_index] = stable
+    # return stable
+    
+    # ✅ โหมด hysteresis (threshold = 3mm)
     if last_values[sensor_index] is None or abs(stable - (last_values[sensor_index] or 0)) >= CHANGE_THRESHOLD:
         last_values[sensor_index] = stable
     return last_values[sensor_index]
@@ -679,15 +803,67 @@ def _clamp_to_range(mm_value: int) -> int:
         return 0
     return int(mm_value)
 
+# ✅ NEW: Sequential read with XSHUT control
+def read_sensor_sequential(sensor_index: int) -> int:
+    """
+    อ่านแบบ Sequential: ปิด XSHUT อื่นทั้งหมดก่อนอ่าน เพื่อลด cross-talk
+    ⚠️ ช้ากว่าแบบปกติ แต่แม่นยำกว่า
+    """
+    if not XSHUT_SEQUENTIAL_READ:
+        return read_sensor(sensor_index)
+    
+    try:
+        # 1) ปิด XSHUT อื่นทั้งหมด
+        for i, pin in enumerate(XSHUT_PINS):
+            if i != sensor_index:
+                pin.value = False
+        
+        time.sleep(XSHUT_OFF_DELAY_MS / 1000.0)
+        
+        # 2) อ่านเฉพาะตัวที่ต้องการ
+        result = read_sensor(sensor_index)
+        
+        # 3) เปิด XSHUT กลับคืน
+        for pin in XSHUT_PINS:
+            pin.value = True
+        
+        time.sleep(0.01)  # รอให้ sensor กลับมา
+        
+        return result
+        
+    except Exception as e:
+        log.error(f"Sequential read error for sensor {sensor_index}: {e}")
+        # กู้คืน XSHUT state
+        for pin in XSHUT_PINS:
+            try:
+                pin.value = True
+            except:
+                pass
+        return -1
+
+# Global flag สำหรับควบคุม recovery
+_disable_recovery_during_door_operation = False
+
+def set_recovery_enabled(enabled: bool) -> None:
+    """
+    เปิด/ปิด auto-recovery ชั่วคราว
+    ใช้ตอนเปิดประตูเพื่อป้องกัน recovery block ลูปหลัก
+    """
+    global _disable_recovery_during_door_operation
+    _disable_recovery_during_door_operation = not enabled
+    if not enabled:
+        log.debug("🔒 Auto-recovery disabled temporarily")
+    else:
+        log.debug("🔓 Auto-recovery enabled")
+
+
 def read_sensor(sensor_index: int) -> int:
     """
-    อ่าน VL53 (index 0..N-1) คืนค่าเป็น mm (int) หรือ -1 ถ้าอ่านไม่ได้
-    จะลอง reopen/XSHUT recover เมื่อ handle หายหรืออ่านพัง
-    - บังคับ inter-sensor delay ต่อ index
-    - ฟิลเตอร์ outlier + median + hysteresis
-    - หัก offset ต่อช่องจาก .env แล้วค่อย clamp
+    🔧 FIX: เพิ่ม retry mechanism + timeout protection
     """
-    # inter-sensor delay (ต่อ 'ตัว' ไม่ใช่รวม)
+    global _disable_recovery_during_door_operation
+    
+    # Inter-sensor delay
     if sensor_index < len(_last_read_ts):
         dt = time.monotonic() - _last_read_ts[sensor_index]
         if dt < INTER_SENSOR_DELAY_S:
@@ -695,38 +871,76 @@ def read_sensor(sensor_index: int) -> int:
 
     with _handles_guard:
         h_exists = sensor_index in _vl53_handles
+    
     if not h_exists:
+        if _disable_recovery_during_door_operation:
+            log.debug(f"Sensor {sensor_index} not init (recovery disabled)")
+            return -1
+        
         if not _reopen_handle(sensor_index):
-            log.warning(f"Sensor index {sensor_index} not initialized (reopen failed)")
+            log.warning(f"Sensor index {sensor_index} not initialized")
             return -1
 
-    try:
-        raw = read_mm(_vl53_handles, sensor_index)
-        if raw is None or raw <= 0 or raw > 2000:
-            if _reopen_handle(sensor_index):
-                raw = read_mm(_vl53_handles, sensor_index)
-        if raw is None or raw <= 0 or raw > 2000:
-            # stamp time แม้ fail เพื่อลดการ loop ถี่เกิน
-            if sensor_index < len(_last_read_ts):
-                _last_read_ts[sensor_index] = time.monotonic()
-            return -1
+    # 🔧 FIX: เพิ่ม retry loop (3 ครั้ง) ก่อน fail
+    MAX_RETRIES = 3
+    for attempt in range(MAX_RETRIES):
+        try:
+            raw = read_mm(_vl53_handles, sensor_index)
+            
+            # ตรวจสอบค่าที่ได้
+            if raw is not None and raw > 0 and raw <= 2000:
+                # ✅ อ่านสำเร็จ → รีเซ็ต counter
+                _sensor_fail_counts[sensor_index] = 0
+                
+                # Apply filters
+                filtered = _apply_outlier_reject(sensor_index, int(raw))
+                stable = _smooth_and_stabilize(sensor_index, filtered)
+                stable = _apply_offset_by_slot_index(sensor_index, stable)
+                val = _clamp_to_range(stable)
+                
+                if sensor_index < len(_last_read_ts):
+                    _last_read_ts[sensor_index] = time.monotonic()
+                
+                return val
+            
+            # ค่าไม่ OK → retry
+            if attempt < MAX_RETRIES - 1:
+                log.debug(f"Sensor {sensor_index} retry {attempt+1}/{MAX_RETRIES}")
+                time.sleep(0.05)  # หน่วงสั้นๆ ก่อน retry
+                
+        except Exception as e:
+            log.debug(f"Read error sensor {sensor_index} attempt {attempt+1}: {e}")
+            if attempt < MAX_RETRIES - 1:
+                time.sleep(0.05)
+    
+    # ❌ Fail ทุก retry
+    _sensor_fail_counts[sensor_index] = _sensor_fail_counts.get(sensor_index, 0) + 1
+    
+    if not _disable_recovery_during_door_operation:
+        if _sensor_fail_counts[sensor_index] >= SENSOR_FAIL_THRESHOLD:
+            log.debug(f"Triggering recovery for sensor {sensor_index}")
+            _auto_recover_if_needed(sensor_index)
+    else:
+        if _sensor_fail_counts[sensor_index] >= SENSOR_FAIL_THRESHOLD:
+            log.debug(f"Sensor {sensor_index} needs recovery (deferred)")
+    
+    if sensor_index < len(_last_read_ts):
+        _last_read_ts[sensor_index] = time.monotonic()
+    
+    return -1
 
-        filtered = _apply_outlier_reject(sensor_index, int(raw))
-        stable = _smooth_and_stabilize(sensor_index, filtered)
-        # หัก offset ต่อช่อง แล้วค่อย clamp
-        stable = _apply_offset_by_slot_index(sensor_index, stable)
-        val = _clamp_to_range(stable)
+# =============================================================================
+# 🔧 ฟังก์ชันสำหรับ trigger recovery แบบ manual
+# =============================================================================
 
-        if sensor_index < len(_last_read_ts):
-            _last_read_ts[sensor_index] = time.monotonic()
-        return val
-
-    except Exception as e:
-        log.error(f"Error reading sensor {sensor_index}: {e}")
-        if sensor_index < len(_last_read_ts):
-            _last_read_ts[sensor_index] = time.monotonic()
-        return -1
-
+def trigger_deferred_recovery() -> None:
+    """
+    ทำ recovery ให้ sensor ที่มี fail count สูง (เรียกหลังปิดประตูแล้ว)
+    """
+    for idx in range(len(SLOT_IDS)):
+        if _sensor_fail_counts.get(idx, 0) >= SENSOR_FAIL_THRESHOLD:
+            log.info(f"🔄 Triggering deferred recovery for sensor {idx}")
+            _auto_recover_if_needed(idx)
 # =============================================================================
 # Utilities for diagnostics
 # =============================================================================
@@ -737,3 +951,78 @@ def sensor_addr(index: int) -> Optional[int]:
 def vl53_address_map() -> Dict[int, tuple[int, str]]:
     """คืน mapping {index: (i2c_addr, backend)} สำหรับ debug."""
     return {i: (h.addr, h.backend) for i, h in _vl53_handles.items()}
+
+def get_sensor_health() -> Dict[int, dict]:
+    """
+    คืนสถานะสุขภาพของ sensor ทั้งหมด
+    ใช้สำหรับ monitoring/debugging
+    """
+    health = {}
+    for index in range(len(SLOT_IDS)):
+        health[index] = {
+            "fail_count": _sensor_fail_counts.get(index, 0),
+            "initialized": index in _vl53_handles,
+            "address": sensor_addr(index),
+            "last_read_ts": _last_read_ts[index] if index < len(_last_read_ts) else 0
+        }
+    return health
+
+def diagnose_sensor(index: int, samples: int = 10) -> dict:
+    """
+    ฟังก์ชัน debug: อ่าน sensor หลายครั้งแล้วสรุปผล
+    
+    Usage:
+        from shared.hardware_helpers import diagnose_sensor
+        result = diagnose_sensor(0, samples=20)
+        print(result)
+    """
+    results = []
+    failures = 0
+    
+    print(f"\n🔍 Diagnosing sensor {index} ({samples} samples)...")
+    
+    for i in range(samples):
+        try:
+            val = read_sensor(index)
+            results.append(val)
+            
+            if val == -1:
+                failures += 1
+                print(f"  [{i+1:2d}] ❌ FAIL")
+            else:
+                print(f"  [{i+1:2d}] ✅ {val:3d}mm")
+            
+            time.sleep(0.1)
+            
+        except Exception as e:
+            failures += 1
+            print(f"  [{i+1:2d}] ❌ ERROR: {e}")
+    
+    valid = [v for v in results if v != -1]
+    
+    report = {
+        "sensor_index": index,
+        "total_samples": samples,
+        "successful": len(valid),
+        "failed": failures,
+        "success_rate": f"{(len(valid)/samples)*100:.1f}%",
+        "values": valid,
+    }
+    
+    if valid:
+        report.update({
+            "min": min(valid),
+            "max": max(valid),
+            "mean": sum(valid) / len(valid),
+            "median": statistics.median(valid),
+            "std_dev": statistics.stdev(valid) if len(valid) > 1 else 0,
+        })
+    
+    print(f"\n📊 Summary:")
+    print(f"  Success: {report['successful']}/{samples} ({report['success_rate']})")
+    if valid:
+        print(f"  Range: {report['min']}-{report['max']}mm")
+        print(f"  Median: {report['median']:.1f}mm")
+        print(f"  Std Dev: {report['std_dev']:.1f}mm")
+    
+    return report

@@ -247,19 +247,53 @@ def send_warning(slot_id: str, message: str, extra: dict | None = None) -> None:
 # =============================================================================
 # READ STABILIZERS
 # =============================================================================
-def _read_mm_stable(index: int, duration_s: float = 0.8, step_s: float = 0.1, retries: int = 1) -> int:
-    """อ่านหลายครั้งและคืน median; ถ้าได้ -1 ล้วน retry สั้น ๆ ก่อนคืน -1"""
+def _read_mm_stable(index: int, duration_s: float = 0.8, step_s: float = 0.1, 
+                   retries: int = 1, min_samples: int = 3) -> int:
+    """
+    🔧 FIX: เพิ่ม min_samples requirement + ปรับ logic
+    
+    Args:
+        index: sensor index
+        duration_s: ระยะเวลารวมที่จะอ่าน
+        step_s: delay ระหว่างการอ่านแต่ละครั้ง
+        retries: จำนวน retry ถ้าได้ -1 ล้วน
+        min_samples: จำนวนตัวอย่างขั้นต่ำที่ต้องได้ก่อนคำนวณ median
+    
+    Returns:
+        median value หรือ -1 ถ้าไม่สำเร็จ
+    """
     vals = []
+    fail_count = 0
+    max_fails = 5  # ยอมให้ fail ได้ไม่เกิน 5 ครั้ง
+    
     t0 = time.time()
     while time.time() - t0 < duration_s:
         v = i2c_read_sensor(index)
+        
         if v != -1:
             vals.append(v)
+            fail_count = 0  # รีเซ็ต fail count เมื่ออ่านสำเร็จ
+        else:
+            fail_count += 1
+            if fail_count >= max_fails:
+                log.debug(f"_read_mm_stable: sensor {index} failed {max_fails} times continuously")
+                break
+        
         time.sleep(step_s)
-    if not vals and retries > 0:
+    
+    # ✅ ตรวจสอบว่าได้ตัวอย่างพอหรือไม่
+    if len(vals) >= min_samples:
+        return int(statistics.median(vals))
+    
+    # ❌ ไม่ได้ตัวอย่างพอ → retry
+    if retries > 0:
+        log.debug(f"_read_mm_stable: insufficient samples ({len(vals)}/{min_samples}), retry...")
         time.sleep(0.2)
-        return _read_mm_stable(index, duration_s=0.4, step_s=0.1, retries=retries - 1)
-    return int(statistics.median(vals)) if vals else -1
+        return _read_mm_stable(index, duration_s=0.4, step_s=0.1, 
+                              retries=retries - 1, min_samples=min_samples)
+    
+    return -1
+
 
 
 def _door_closed_stable(index: int, hold_s: float | None = None, step_s: float = 0.05) -> bool:
@@ -298,7 +332,7 @@ def Storage_compartment(index: int) -> None:
       4) Publish สถานะสรุป
     """
     try:
-        i2c_move_servo_180(index, 80)
+        i2c_move_servo_180(index, 70)
         log_event(f"🔄 เปิดมอเตอร์ช่อง {INDEX_TO_SLOT[index]} (→ 180°)")
 
         # quiet window หลังขยับเซอร์โว
@@ -375,115 +409,280 @@ def Storage_compartment(index: int) -> None:
 # =============================================================================
 # DOOR UNLOCK (SOLENOID) SEQUENCE
 # =============================================================================
+
 def handle_door_unlock(index: int) -> None:
-    """
-    โซลินอยด์: ปลดล็อก → รอผู้ใช้ "เปิดจริง" ภายใน DOOR_UNLOCK_WINDOW_S
-      - ถ้าเปิดทันเวลา: (เลือกค้างไฟ/ไม่ค้างไฟ) → เฝ้าการเคลื่อนไหว/เตือน → รอ "ปิดจริง"
-      - ถ้าไม่เปิดทัน: ตัดไฟและจบ
-    ใช้ MC-38 แบบดีบาวน์ผ่าน _door_open_stable/_door_closed_stable
-    """
+
+    # โซลินอยด์: ปลดล็อก → รอผู้ใช้เปิด → เฝ้าการเคลื่อนไหว → รอปิด → ล็อก
+    
+    # 🔧 FIX: ปิด auto-recovery ระหว่างประตูเปิด
+    # - ป้องกัน recovery block ลูปตรวจจับการปิด
+    # - Trigger recovery แบบ manual หลังปิดประตูแล้ว
+    
+    # 🔧 Import ฟังก์ชันควบคุม recovery
+    from shared.hardware_helpers import (
+        set_recovery_enabled, 
+        trigger_deferred_recovery
+    )
+    
     try:
         # 1) ปลดล็อก
         i2c_set_relay(index, True)
         log_event(f"🔓 เปิดประตูช่อง {INDEX_TO_SLOT[index]} (Relay ON)")
 
-        # โหมดพัลส์: จ่ายไฟ x ms แล้วตัดเลย
+        # โหมดพัลส์
         if SOLENOID_PULSE_MS > 0:
             time.sleep(SOLENOID_PULSE_MS / 1000.0)
             i2c_set_relay(index, False)
         else:
-            # กันสัญญาณเด้งจากรีเลย์
             time.sleep(0.25)
 
-        # 2) รอให้ "เปิดจริง" (debounce) ภายในหน้าต่างเวลา
+        # 2) รอให้เปิดจริง (debounce) ภายในหน้าต่างเวลา
         opened = False
         deadline = time.time() + DOOR_UNLOCK_WINDOW_S
+        
         while time.time() < deadline:
-            if _door_open_stable(index, hold_s=DOOR_DEBOUNCE_OPEN_S):
-                slot_status[index]["is_open"] = True
-                publish_status_idx(index)
-                publish_warning_idx(index, "ประตูถูกเปิดแล้ว")
-                log_event("✅ ประตูถูกเปิดแล้ว")
+            try:
+                if _door_open_stable(index, hold_s=DOOR_DEBOUNCE_OPEN_S):
+                    slot_status[index]["is_open"] = True
+                    publish_status_idx(index)
+                    publish_warning_idx(index, "ประตูถูกเปิดแล้ว")
+                    log_event("✅ ประตูถูกเปิดแล้ว")
 
-                # ถ้าไม่ได้ใช้พัลส์ และต้องการค้างไฟไว้ระหว่างเปิด
-                if SOLENOID_PULSE_MS == 0 and SOLENOID_KEEP_ON_WHILE_OPEN:
-                    i2c_set_relay(index, True)
-                opened = True
-                break
+                    if SOLENOID_PULSE_MS == 0 and SOLENOID_KEEP_ON_WHILE_OPEN:
+                        i2c_set_relay(index, True)
+                    opened = True
+                    break
+            except Exception as e:
+                log.warning(f"Door open check error: {e}")
+                time.sleep(0.5)
+                continue
+            
             time.sleep(SENSOR_CHECK_INTERVAL)
 
         if not opened:
-            # ไม่ได้เปิดภายในเวลา → ตัดไฟและประกาศล็อก
             i2c_set_relay(index, False)
             publish_warning_idx(index, "ประตูถูกล็อกแล้ว")
             log_event("⚠️ ครบเวลาแต่ยังไม่เปิดประตู → ล็อกกลับทันที")
             return
 
-        # 3) เฝ้าระหว่างเปิด: ตรวจจับการเคลื่อนไหว + เตือนเป็นช่วง ๆ หากค้าง
+        # 3) 🔧 FIX: ปิด auto-recovery ระหว่างประตูเปิด
+        set_recovery_enabled(False)
+        log_event("🔒 ปิด auto-recovery ชั่วคราว (ระหว่างประตูเปิด)")
+        
+        # เฝ้าระหว่างเปิด
         last_warning_time = 0.0
+        start_open_time = time.time()
+        
+        # ตัวแปรสำหรับติดตาม sensor
         last_motion_time = time.time()
-        last_distance = _read_mm_stable(index, duration_s=0.5)
+        last_distance = None
+        sensor_available = True
+        
+        # อ่านค่าเริ่มต้นแบบไม่ block
+        try:
+            last_distance = _read_mm_stable(index, duration_s=0.3)
+        except Exception:
+            sensor_available = False
+            log.warning("⚠️ Sensor not available during door open monitoring")
+
         log_event("📦 เริ่มตรวจจับการนำเอกสารออก...")
 
-        start_open_time = time.time()
         while True:
-            # ถ้าปิด "เสถียร" แล้ว → ไปล็อก
-            if _door_closed_stable(index, hold_s=DOOR_DEBOUNCE_CLOSE_S):
+            # เช็คประตูปิดก่อน (ไม่ให้ sensor block)
+            door_closed = False
+            try:
+                door_closed = _door_closed_stable(index, hold_s=DOOR_DEBOUNCE_CLOSE_S)
+            except Exception as e:
+                log.warning(f"Door close check error: {e}")
+            
+            if door_closed:
                 log_event("🚪 ผู้ใช้ปิดประตูแล้ว → ไปล็อก")
                 break
 
-            # อ่านระยะให้เสถียร
-            cur = _read_mm_stable(index, duration_s=0.3)
-            if (cur != -1 and last_distance != -1 and
-                    abs(cur - last_distance) >= max(SENSOR_MOTION_THRESHOLD, 1)):
-                last_motion_time = time.time()
-                last_distance = cur
-                log_dbg(f"🔄 เคลื่อนไหวในช่อง: {cur} mm")
+            # อ่าน distance แบบ non-blocking
+            if sensor_available:
+                try:
+                    cur = _read_mm_stable(index, duration_s=0.2)
+                    if cur != -1 and last_distance is not None and last_distance != -1:
+                        if abs(cur - last_distance) >= max(SENSOR_MOTION_THRESHOLD, 1):
+                            last_motion_time = time.time()
+                            last_distance = cur
+                            log_dbg(f"🔄 เคลื่อนไหวในช่อง: {cur} mm")
+                    elif cur != -1:
+                        last_distance = cur
+                except Exception as e:
+                    log.debug(f"Distance read failed (continue anyway): {e}")
+                    sensor_available = False
 
-            # เตือนซ้ำหากค้างนาน/ไม่มีการขยับ
-            if (time.time() - last_motion_time > MOTION_INACTIVE_BEFORE_WARN and
-                    not i2c_is_door_closed(index) and
+            # เตือนตาม timeout
+            time_since_start = time.time() - start_open_time
+            
+            if (time_since_start > MOTION_INACTIVE_BEFORE_WARN and
                     time.time() - last_warning_time > TIME_REPEAT_WARNING):
                 publish_warning_idx(index, "ลืมปิดประตู !!! กรุณาปิดให้สนิทเพื่อทำการล็อก")
                 last_warning_time = time.time()
 
-            # hard timeout ระหว่างเปิด
-            if time.time() - start_open_time > MOTION_TIMEOUT:
-                log_event("⏳ หมดเวลาระหว่างเปิด → ไปขั้นตอนล็อก")
+            # hard timeout
+            if time_since_start > MOTION_TIMEOUT:
+                log_event("⏳ หมดเวลาระหว่างเปิด → บังคับล็อก")
                 break
 
             time.sleep(SENSOR_CHECK_INTERVAL)
 
-        # 4) กันเด้งเพิ่มนิดก่อนสั่งล็อก
+        # 4) 🔧 FIX: เปิด auto-recovery กลับหลังปิดประตูแล้ว
+        set_recovery_enabled(True)
+        log_event("🔓 เปิด auto-recovery กลับ")
+        
+        # กันเด้งก่อนล็อก
         time.sleep(0.3)
 
-        # 5) สั่งล็อก (ตัดไฟ)
+        # 5) สั่งล็อก
         i2c_set_relay(index, False)
         log_event(f"🔐 ล็อกประตูช่อง {INDEX_TO_SLOT[index]} (Relay OFF)")
 
-        # Double-check ว่าปิดจริงแบบคงที่
-        if not _door_closed_stable(index, hold_s=DOOR_DEBOUNCE_CLOSE_S):
-            publish_warning_idx(index, "ระบบพยายามล็อกแล้ว แต่ประตูยังไม่ปิดสนิท")
-            log_event("⚠️ ล็อกไม่สำเร็จเพราะประตูยังไม่ปิดคงที่")
-            return
+        # Double-check แบบมี timeout
+        close_confirmed = False
+        confirm_deadline = time.time() + 2.0
+        
+        while time.time() < confirm_deadline:
+            try:
+                if _door_closed_stable(index, hold_s=0.4):
+                    close_confirmed = True
+                    break
+            except Exception as e:
+                log.warning(f"Door close confirmation error: {e}")
+                break
+            time.sleep(0.2)
+        
+        if not close_confirmed:
+            publish_warning_idx(index, "ระบบพยายามล็อกแล้ว แต่ไม่สามารถยืนยันว่าประตูปิดสนิท")
+            log_event("⚠️ ไม่สามารถยืนยันการปิดประตู (อาจเป็น sensor error)")
+        else:
+            publish_warning_idx(index, "ประตูถูกล็อกแล้ว")
 
-        # แจ้งล็อกสำเร็จหลัง OFF สำเร็จเท่านั้น
-        publish_warning_idx(index, "ประตูถูกล็อกแล้ว")
+        # 6) 🔧 FIX: Trigger recovery สำหรับ sensor ที่มีปัญหา (ถ้ามี)
+        try:
+            trigger_deferred_recovery()
+        except Exception as e:
+            log.warning(f"Deferred recovery failed: {e}")
+        
+        # 7) อ่านค่าสรุปสถานะ
+        time.sleep(0.5)
+        final_value = -1
+        for attempt in range(3):  # ลอง 3 ครั้ง
+            try:
+                temp = _read_mm_stable(index, duration_s=1.0, min_samples=5)
+                
+                if temp != -1:
+                    # ✅ ได้ค่าแล้ว → ตรวจสอบความสมเหตุสมผล
+                    # (ค่าควรอยู่ในช่วง 80-300mm หลัง calibrate)
+                    if 0 <= temp <= 300:
+                        final_value = temp
+                        log.info(f"✅ Final value read successful: {final_value}mm (attempt {attempt+1})")
+                        break
+                    else:
+                        log.warning(f"⚠️ Final value out of range: {temp}mm (attempt {attempt+1})")
+                else:
+                    log.warning(f"⚠️ Final value read failed (attempt {attempt+1})")
+                
+                # หน่วงก่อน retry
+                if attempt < 2:
+                    time.sleep(0.3)
 
-        # 6) อ่านค่าเสถียรสรุปสถานะ
-        time.sleep(0.25)  # quiet window หลังตัดรีเลย์
-        final_value = _read_mm_stable(index, duration_s=SENSOR_STABLE_DURATION)
+            except Exception as e:
+                log.warning(f"Final value read error (attempt {attempt+1}): {e}")
+            if attempt < 2:
+                time.sleep(0.3)
+        
+        # 8) อัปเดตสถานะ
+        if final_value == -1:
+            # ไม่สามารถอ่านได้ → ใช้ค่าเดิม
+            log.warning("⚠️ Cannot read final value, keeping previous value")
+            final_value = slot_status[index]["capacity_mm"]
+        
         slot_status[index].update({
-            "capacity_mm": final_value if final_value != -1 else slot_status[index]["capacity_mm"],
-            "capacity_percent": mm_to_percent(None if final_value == -1 else final_value),
+            "capacity_mm": final_value,
+            "capacity_percent": mm_to_percent(final_value if final_value != -1 else None),
             "connection_status": (final_value != -1),
-            "is_open": not i2c_is_door_closed(index),
+            "is_open": not close_confirmed,
         })
         publish_status_idx(index)
 
     except Exception as e:
-        log.error(f"[ERR] handle_door_unlock({INDEX_TO_SLOT[index]}): {e}")
+        log.error(f"CRITICAL: handle_door_unlock failed: {e}", exc_info=True)
+        # 🔧 FIX: ตรวจสอบว่าเปิด auto-recovery กลับหรือยัง
+        set_recovery_enabled(True) 
+        log.error("Re-enabled auto-recovery after critical error.")
+        
+        try:
+            # พยายามล็อกกลับถ้าพลาด
+            i2c_set_relay(index, False)
+            publish_warning_idx(index, "เกิดข้อผิดพลาด! กำลังพยายามล็อกประตู")
+        except Exception as e_relay:
+            log.error(f"Failed to force lock after error: {e_relay}")
+    
 
+
+
+def diagnose_sensor(index: int, samples: int = 10) -> dict:
+    """
+    ฟังก์ชัน debug: อ่าน sensor หลายครั้งแล้วสรุปผล
+    
+    Usage:
+        from shared.hardware_helpers import diagnose_sensor
+        result = diagnose_sensor(0, samples=20)
+        print(result)
+    """
+    results = []
+    failures = 0
+    
+    print(f"\n🔍 Diagnosing sensor {index} ({samples} samples)...")
+    
+    for i in range(samples):
+        try:
+            val = read_sensor(index)
+            results.append(val)
+            
+            if val == -1:
+                failures += 1
+                print(f"  [{i+1:2d}] ❌ FAIL")
+            else:
+                print(f"  [{i+1:2d}] ✅ {val:3d}mm")
+            
+            time.sleep(0.1)
+            
+        except Exception as e:
+            failures += 1
+            print(f"  [{i+1:2d}] ❌ ERROR: {e}")
+    
+    valid = [v for v in results if v != -1]
+    
+    report = {
+        "sensor_index": index,
+        "total_samples": samples,
+        "successful": len(valid),
+        "failed": failures,
+        "success_rate": f"{(len(valid)/samples)*100:.1f}%",
+        "values": valid,
+    }
+    
+    if valid:
+        report.update({
+            "min": min(valid),
+            "max": max(valid),
+            "mean": sum(valid) / len(valid),
+            "median": statistics.median(valid),
+            "std_dev": statistics.stdev(valid) if len(valid) > 1 else 0,
+        })
+    
+    print(f"\n📊 Summary:")
+    print(f"  Success: {report['successful']}/{samples} ({report['success_rate']})")
+    if valid:
+        print(f"  Range: {report['min']}-{report['max']}mm")
+        print(f"  Median: {report['median']:.1f}mm")
+        print(f"  Std Dev: {report['std_dev']:.1f}mm")
+    
+    return report
 
 # =============================================================================
 # TOPIC/PAYLOAD PARSER + MESSAGE DISPATCH
@@ -767,7 +966,7 @@ def main() -> None:
 
     start_workers()
     # กำหนดช่วง publish อัตโนมัติ (120 วินาที)
-    start_status_updater(interval_s=10, initial_delay_s=3.0)
+    start_status_updater(interval_s=120, initial_delay_s=3.0)
 
     try:
         while True:
@@ -777,4 +976,14 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] == "diagnose":
+        init_mcp()
+        init_sensors()
+        from shared.hardware_helpers import diagnose_sensor
+        
+        # ทดสอบ sensor 0
+        result = diagnose_sensor(0, samples=50)
+        sys.exit(0)
+    else:
+        main()
