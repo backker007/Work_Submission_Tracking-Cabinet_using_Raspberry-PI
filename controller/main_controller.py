@@ -65,13 +65,14 @@ from shared.hardware_helpers import (  # type: ignore
     read_sensor, move_servo_180, is_door_reliably_closed,
     mcp_pins, relay_pins, CHANGE_THRESHOLD, is_slot_full,
     mcp,
-    set_slot_led_ready, set_slot_led_error,
+    set_slot_led_ready, set_slot_led_error, set_slot_led_off,   # ← เพิ่มฟังก์ชันนี้
     vl53_address_map, internet_ok,
 )
 
+
 # --- Role helpers ---
 from shared.role_helpers import can_open_slot, can_open_door, is_valid_role  # type: ignore
-
+from shared.hardware_helpers import read_sensor as _read_sensor_core, reset_sensor_filter, read_sensor_fresh
 
 # =============================================================================
 # CONFIG (.env)
@@ -100,12 +101,13 @@ EMPTY_MM = float(os.getenv("EMPTY_MM", "200"))
 FULL_MM  = float(os.getenv("FULL_MM",  "80"))
 
 def mm_to_percent(mm_corr: int | None) -> int | None:
-    """แปลงระยะเป็น % ความจุแบบ linear ระหว่าง FULL_MM..EMPTY_MM"""
-    if mm_corr is None or mm_corr < 0:
+    # ค่า <= 0 ให้เป็น None (invalid) แทนที่จะกลายเป็น 100%
+    if mm_corr is None or mm_corr <= 0:
         return None
     denom = max(1.0, (EMPTY_MM - FULL_MM))
     pct = round(((EMPTY_MM - float(mm_corr)) / denom) * 100.0)
     return max(0, min(100, pct))
+
 
 
 # =============================================================================
@@ -120,6 +122,14 @@ def log_dbg(msg: str) -> None:
     """Log รายละเอียดระดับ debug."""
     log.debug(msg)
 
+# วางใน controller/main_controller.py ใกล้ๆ i2c_set_relay
+def i2c_pulse_relay(index: int, ms: int) -> None:
+    """จ่ายไฟรีเลย์เป็นระยะเวลาสั้นๆ (ms) แล้วตัด"""
+    ms = max(10, int(ms))  # กันค่าเล็กเกินไป
+    i2c_set_relay(index, True)
+    log_event(f"⚡ Relay CH{index} PULSE {ms} ms")
+    time.sleep(ms / 1000.0)
+    i2c_set_relay(index, False)
 
 # =============================================================================
 # GLOBAL STATE
@@ -139,6 +149,63 @@ slot_queues: dict[str, Queue] = {sid: Queue(maxsize=SLOT_QUEUE_MAXSIZE) for sid 
 _i2c_fail_counts = {sid: 0 for sid in SLOT_IDS}
 FAIL_THRESHOLD = 3  # อ่านพลาดติดกันกี่ครั้งถึงถือว่าหลุด
 
+_blink_stop_events: dict[int, threading.Event] = {}
+_blink_threads: dict[int, threading.Thread] = {}
+
+def _is_slot_blinking(idx: int) -> bool:
+    t = _blink_threads.get(idx)
+    return bool(t and t.is_alive())
+
+def start_green_blink(idx: int, period_s: float = 0.6) -> None:
+    """
+    กระพริบไฟเขียวของช่อง idx ระหว่างที่กำลังเปิด door/slot
+    - ขณะเน็ตหลุด จะไม่ไปแย่งกับ watchdog (จะปล่อยให้กระพริบแดงทั้งตู้)
+    """
+    # ถ้ามีของเดิมอยู่ ให้หยุดก่อน
+    stop_old = _blink_stop_events.get(idx)
+    if stop_old:
+        stop_old.set()
+
+    stop = threading.Event()
+    _blink_stop_events[idx] = stop
+
+    def _loop():
+        on = True
+        while not stop.is_set():
+            if internet_ok():
+                if on:
+                    set_slot_led_ready(mcp, idx)   # เขียว ON
+                else:
+                    set_slot_led_off(mcp, idx)     # เขียว OFF (ดับทั้งคู่)
+            # ถ้าเน็ตไม่โอเค ปล่อยให้ watchdog คุม (กระพริบแดง)
+            time.sleep(period_s / 2.0)
+            on = not on
+
+    t = threading.Thread(target=_loop, daemon=True, name=f"blink-green-{INDEX_TO_SLOT[idx]}")
+    _blink_threads[idx] = t
+    t.start()
+
+def stop_blink(idx: int, set_final: bool = True) -> None:
+    """หยุดกระพริบ และคืนค่าไฟค้างตามสถานะ (ว่าง=เขียว, เต็ม=แดง)"""
+    ev = _blink_stop_events.pop(idx, None)
+    if ev:
+        ev.set()
+    t = _blink_threads.get(idx)
+    if t and t.is_alive():
+        try:
+            t.join(timeout=0.05)
+        except Exception:
+            pass
+    _blink_threads.pop(idx, None)
+
+    # ตั้งไฟค้างตามสถานะล่าสุด (ถ้าเน็ตโอเค)
+    if set_final and internet_ok():
+        sid = INDEX_TO_SLOT[idx]
+        mm_now = slot_status[idx]["capacity_mm"]
+        if is_slot_full(sid, mm_now):
+            set_slot_led_error(mcp, idx)   # เต็ม = แดงค้าง
+        else:
+            set_slot_led_ready(mcp, idx)   # ว่าง/ยังมีที่ = เขียวค้าง
 
 # =============================================================================
 # I²C SHORT-LOCK HELPERS
@@ -147,6 +214,19 @@ def i2c_read_sensor(index: int) -> int:
     """อ่าน VL53 แบบเข้าถึง I2C ด้วย lock สั้น ๆ."""
     with i2c_lock:
         return read_sensor(index)
+# เพิ่มใกล้ๆ i2c_read_sensor เดิม
+from shared.hardware_helpers import read_sensor as _read_sensor_core, reset_sensor_filter, read_sensor_fresh
+
+def i2c_read_sensor_fresh(index: int) -> int:
+    """อ่านเซ็นเซอร์แบบสด (ไม่อิงบัฟเฟอร์) ภายใต้ I2C lock"""
+    with i2c_lock:
+        # ล้างประวัติ + อ่านสดหนึ่งชุด (จะคืนค่า median จากหลายครั้งสั้นๆ)
+        return read_sensor_fresh(index, samples=3, gap_s=0.02)
+
+def i2c_read_sensor_once_raw(index: int) -> int:
+    """อ่านสด 1 ช็อต ไม่อิงบัฟเฟอร์/ฮิสเทอรีซิส"""
+    with i2c_lock:
+        return _read_sensor_core(index, use_filter=False, reset_before=True)
 
 
 def i2c_move_servo_180(index: int, angle: int) -> None:
@@ -171,42 +251,104 @@ def i2c_set_relay(index: int, value: bool) -> None:
 # LED-aware read helper
 # =============================================================================
 def read_slot_and_update_led(slot_id: str):
-    """
-    อ่านระยะของช่อง (โดยอิง slot_id → index) แล้วอัปเดตไฟ LED:
-      - อินเทอร์เน็ต/ MQTT host ต่อไม่ได้: ไฟแดง (override โดย hardware_helpers อยู่แล้ว)
-      - I2C fail ถึง threshold: แดง
-      - ช่องเต็ม (<= threshold): แดง
-      - ปกติ: เขียว
-    คืนค่า distance_mm หรือ None ถ้าอ่านไม่ได้
-    """
-    idx = SLOT_TO_INDEX[slot_id]  # 0..3
-
-    # 1) ถ้าเน็ตหลุด: ปล่อยให้ hardware_helpers คุมไฟเป็นแดงรวมอยู่แล้ว
+    idx = SLOT_TO_INDEX[slot_id]
     if not internet_ok():
         try:
-            _ = read_sensor(idx)  # optional: เก็บค่าเผื่อ debug
+            _ = read_sensor(idx)
         except Exception:
             pass
         return None
 
-    # 2) พยายามอ่าน I2C
     try:
         distance_mm = read_sensor(idx)
-        _i2c_fail_counts[slot_id] = 0  # อ่านสำเร็จ รีเซ็ตเคานต์พลาด
+        # 🔴 สำคัญ: 0 หรือค่าติดลบ → ถือว่า invalid
+        if not isinstance(distance_mm, (int, float)) or distance_mm <= 0:
+            distance_mm = -1
+        _i2c_fail_counts[slot_id] = 0 if distance_mm != -1 else _i2c_fail_counts[slot_id] + 1
     except Exception:
         _i2c_fail_counts[slot_id] += 1
-        if _i2c_fail_counts[slot_id] >= FAIL_THRESHOLD:
-            set_slot_led_error(mcp, idx)
         return None
 
-    # 3) อ่านได้แล้ว — เช็ค “ช่องเต็ม”
-    if is_slot_full(slot_id, distance_mm):
-        set_slot_led_error(mcp, idx)
-    else:
-        set_slot_led_ready(mcp, idx)
+    if _is_slot_blinking(idx):
+        return distance_mm
+
+    if distance_mm != -1:
+        if is_slot_full(slot_id, distance_mm):
+            set_slot_led_error(mcp, idx)
+        else:
+            set_slot_led_ready(mcp, idx)
 
     return distance_mm
 
+def publish_slot_status_quick_single(idx: int) -> None:
+    sid = INDEX_TO_SLOT[idx]
+
+    v = i2c_read_sensor_fresh(idx)
+    if not isinstance(v, (int, float)) or v <= 0:
+        v = -1
+    if v == -1:
+        v = read_until_ok_or_reinit(idx, pre_wait_s=1.0, post_wait_s=1.0, step_s=0.12)
+
+    try:
+        if internet_ok() and not _is_slot_blinking(idx) and v != -1:
+            if is_slot_full(sid, v):
+                set_slot_led_error(mcp, idx)
+            else:
+                set_slot_led_ready(mcp, idx)
+    except Exception:
+        pass
+
+    try:
+        is_open = not i2c_is_door_closed(idx)
+    except Exception:
+        is_open = slot_status[idx].get("is_open", False)
+
+    prev_mm = slot_status[idx]["capacity_mm"]
+    mm_now = prev_mm if (not isinstance(v, (int, float)) or v < 0) else int(v)
+    is_connected = internet_ok()
+
+    slot_status[idx].update({
+        "capacity_mm": mm_now,
+        "capacity_percent": mm_to_percent(mm_now),
+        "connection_status": is_connected,
+        "is_open": is_open,
+    })
+    publish_status_idx(idx)
+
+
+
+
+def read_until_ok_or_reinit(index: int, pre_wait_s: float = 3.0, post_wait_s: float = 3.0, step_s: float = 0.12) -> int:
+    t0 = time.time()
+    v = -1
+    while time.time() - t0 < pre_wait_s:
+        v = i2c_read_sensor_fresh(index)
+        if isinstance(v, (int, float)) and v > 0:
+            return v
+        time.sleep(step_s)
+
+    # kick เฉพาะ index นี้
+    try:
+        _ = i2c_read_sensor_once_raw(index)
+    except Exception:
+        pass
+
+    # 🔥 ทิ้งค่า 2-3 ช็อตหลัง reopen เพื่อวอร์มอัพ
+    for _ in range(3):
+        try:
+            _ = i2c_read_sensor_once_raw(index)
+        except Exception:
+            pass
+        time.sleep(0.03)
+
+    t1 = time.time()
+    while time.time() - t1 < post_wait_s:
+        v = i2c_read_sensor_fresh(index)
+        if isinstance(v, (int, float)) and v > 0:
+            return v
+        time.sleep(step_s)
+
+    return -1
 
 # =============================================================================
 # MQTT HELPERS (by index)
@@ -248,12 +390,11 @@ def send_warning(slot_id: str, message: str, extra: dict | None = None) -> None:
 # READ STABILIZERS
 # =============================================================================
 def _read_mm_stable(index: int, duration_s: float = 0.8, step_s: float = 0.1, retries: int = 1) -> int:
-    """อ่านหลายครั้งและคืน median; ถ้าได้ -1 ล้วน retry สั้น ๆ ก่อนคืน -1"""
     vals = []
     t0 = time.time()
     while time.time() - t0 < duration_s:
-        v = i2c_read_sensor(index)
-        if v != -1:
+        v = i2c_read_sensor_fresh(index)
+        if isinstance(v, (int, float)) and v > 0:
             vals.append(v)
         time.sleep(step_s)
     if not vals and retries > 0:
@@ -291,43 +432,43 @@ def _door_open_stable(index: int, hold_s: float | None = None, step_s: float = 0
 # =============================================================================
 def Storage_compartment(index: int) -> None:
     """
-    ลอจิกของการ 'เปิดช่อง' เพื่อให้ผู้ใช้ใส่ของ:
-      1) เปิด servo → เก็บ baseline
-      2) รอผู้ใช้ใส่ของ (ตรวจ Δ ระยะ)
-      3) เฝ้าการเคลื่อนไหว → หยุดนิ่ง ≥ 3s → ปิด servo
-      4) Publish สถานะสรุป
+    เปิดช่องให้ใส่ของ โดยอัปเดต/อ่านเฉพาะ 'ช่องนี้' เท่านั้น
+    - อ่าน baseline ด้วย read_until_ok_or_reinit()
+    - ไม่สแกนช่องอื่น
     """
     try:
-        i2c_move_servo_180(index, 90)
+        # อัปเดตสถานะ/LED ของช่องนี้ (ก่อนเริ่ม)
+        publish_slot_status_quick_single(index)
+
+        i2c_move_servo_180(index, 80)
         log_event(f"🔄 เปิดมอเตอร์ช่อง {INDEX_TO_SLOT[index]} (→ 180°)")
+        time.sleep(0.25)  # quiet window หลังขยับ
 
-        # quiet window หลังขยับเซอร์โว
-        time.sleep(0.25)
-
-        # baseline เสถียร (สูงสุด 5s)
-        initial, deadline = -1, time.time() + 5
-        while initial <= 0 and time.time() < deadline:
-            initial = _read_mm_stable(index, duration_s=0.5)
-            if initial <= 0:
-                time.sleep(ACTIVE_CHECK_INTERVAL)
+        # baseline: พยายามอ่านจนกว่าจะได้ (ถ้าไม่ได้ให้ re-init แล้วลองอีก)
+        initial = read_until_ok_or_reinit(index, pre_wait_s=3.0, post_wait_s=2.0)
 
         state = "wait_insert" if initial > 0 else "close_servo"
         if initial <= 0:
-            log_event("❌ baseline ไม่สำเร็จภายใน 5s → ปิดมอเตอร์")
+            log_event("❌ baseline ไม่สำเร็จ → ปิดมอเตอร์")
 
         while state != "done":
             if state == "wait_insert":
                 timeout = time.time() + 12
                 last_report = 0.0
                 while time.time() < timeout:
-                    cur = _read_mm_stable(index, duration_s=0.4)
-                    if cur > 0 and (initial - cur) >= max(CHANGE_THRESHOLD, 5):
+                    cur = _read_mm_stable(index, duration_s=0.4)  # อ่านแบบเสถียรเร็วๆ
+                    # อัปเดตเฉพาะช่องนี้เป็นพักๆ
+                    publish_slot_status_quick_single(index)
+
+                    if cur != -1 and initial > 0 and (initial - cur) >= max(CHANGE_THRESHOLD, 5):
                         log_event(f"📦 วางของแล้ว (Δ={initial - cur} mm)")
                         state = "monitor_movement"
                         break
+
                     if time.time() - last_report > 2:
                         log_dbg(f"⏳ รอใส่ของ {INDEX_TO_SLOT[index]}: cur={cur} (base={initial})")
                         last_report = time.time()
+
                     time.sleep(ACTIVE_CHECK_INTERVAL)
                 else:
                     log_event("⏱ หมดเวลาใส่ของ → ปิดมอเตอร์")
@@ -337,16 +478,22 @@ def Storage_compartment(index: int) -> None:
                 last_motion_time = time.time()
                 last_distance = _read_mm_stable(index, duration_s=0.4)
                 log_dbg("🔁 ตรวจจับความเคลื่อนไหว...")
+
                 while True:
                     cur = _read_mm_stable(index, duration_s=0.3)
+                    publish_slot_status_quick_single(index)  # อัปเดตเฉพาะช่องนี้
+
                     if cur != -1 and last_distance != -1 and abs(cur - last_distance) >= max(CHANGE_THRESHOLD, 5):
                         last_motion_time = time.time()
                         last_distance = cur
                         log_dbg(f"🔍 เคลื่อนไหว: {cur} mm")
+
                     if time.time() - last_motion_time >= 3:
                         log_event("⏳ ไม่มีการขยับ 3 วิ → ปิดมอเตอร์")
                         break
+
                     time.sleep(ACTIVE_CHECK_INTERVAL)
+
                 state = "close_servo"
 
             elif state == "close_servo":
@@ -354,8 +501,9 @@ def Storage_compartment(index: int) -> None:
                 log_event(f"🔒 ปิดมอเตอร์ช่อง {INDEX_TO_SLOT[index]} (← 0°)")
                 time.sleep(0.25)  # quiet window ก่อนอ่านสรุป
 
-                capacity = _read_mm_stable(index, duration_s=0.8)
-                is_connected = (capacity != -1)
+                # สรุป: ลองอ่านให้ได้ค่าก่อน (พร้อม re-init ถ้าจำเป็น)
+                capacity = read_until_ok_or_reinit(index, pre_wait_s=2.0, post_wait_s=1.5)
+                is_connected = internet_ok()
                 is_open = not i2c_is_door_closed(index)
 
                 slot_status[index].update({
@@ -365,9 +513,13 @@ def Storage_compartment(index: int) -> None:
                     "is_open": is_open,
                 })
                 publish_status_idx(index)
+
+                # ดัน LED/สถานะสำหรับ 'ช่องนี้' อีกรอบ
+                publish_slot_status_quick_single(index)
                 state = "done"
 
         log_event(f"✅ ช่อง {INDEX_TO_SLOT[index]}: งานเสร็จ")
+
     except Exception as e:
         log.error(f"[ERR] Storage_compartment({INDEX_TO_SLOT[index]}): {e}")
 
@@ -377,27 +529,27 @@ def Storage_compartment(index: int) -> None:
 # =============================================================================
 def handle_door_unlock(index: int) -> None:
     """
-    โซลินอยด์: ปลดล็อก → รอผู้ใช้ "เปิดจริง" ภายใน DOOR_UNLOCK_WINDOW_S
-      - ถ้าเปิดทันเวลา: (เลือกค้างไฟ/ไม่ค้างไฟ) → เฝ้าการเคลื่อนไหว/เตือน → รอ "ปิดจริง"
-      - ถ้าไม่เปิดทัน: ตัดไฟและจบ
-    ใช้ MC-38 แบบดีบาวน์ผ่าน _door_open_stable/_door_closed_stable
+    ปลดล็อกประตู โดยอัปเดต/อ่านเฉพาะช่องนี้เท่านั้น
+    - ไม่สแกนช่องอื่น
+    - อ่านสรุปสุดท้ายด้วย read_until_ok_or_reinit()
     """
     try:
-        # 1) ปลดล็อก
-        i2c_set_relay(index, True)
-        log_event(f"🔓 เปิดประตูช่อง {INDEX_TO_SLOT[index]} (Relay ON)")
+        # อัปเดตเฉพาะช่องนี้ก่อนเริ่ม
+        publish_slot_status_quick_single(index)
 
-        # โหมดพัลส์: จ่ายไฟ x ms แล้วตัดเลย
-        if SOLENOID_PULSE_MS > 0:
-            time.sleep(SOLENOID_PULSE_MS / 1000.0)
-            i2c_set_relay(index, False)
+        # 1) ปลดล็อก
+        pulse = SOLENOID_PULSE_MS
+        if pulse > 0:
+            i2c_pulse_relay(index, pulse)
         else:
-            # กันสัญญาณเด้งจากรีเลย์
+            i2c_set_relay(index, True)
+            log_event(f"🔓 เปิดประตูช่อง {INDEX_TO_SLOT[index]} (Relay ON)")
             time.sleep(0.25)
 
-        # 2) รอให้ "เปิดจริง" (debounce) ภายในหน้าต่างเวลา
+        # 2) รอให้ "เปิดจริง"
         opened = False
         deadline = time.time() + DOOR_UNLOCK_WINDOW_S
+
         while time.time() < deadline:
             if _door_open_stable(index, hold_s=DOOR_DEBOUNCE_OPEN_S):
                 slot_status[index]["is_open"] = True
@@ -405,34 +557,36 @@ def handle_door_unlock(index: int) -> None:
                 publish_warning_idx(index, "ประตูถูกเปิดแล้ว")
                 log_event("✅ ประตูถูกเปิดแล้ว")
 
-                # ถ้าไม่ได้ใช้พัลส์ และต้องการค้างไฟไว้ระหว่างเปิด
                 if SOLENOID_PULSE_MS == 0 and SOLENOID_KEEP_ON_WHILE_OPEN:
                     i2c_set_relay(index, True)
+
+                publish_slot_status_quick_single(index)  # เฉพาะช่องนี้
                 opened = True
                 break
+
+            # อัปเดตเฉพาะช่องนี้ระหว่างรอ
+            publish_slot_status_quick_single(index)
             time.sleep(SENSOR_CHECK_INTERVAL)
 
         if not opened:
-            # ไม่ได้เปิดภายในเวลา → ตัดไฟและประกาศล็อก
             i2c_set_relay(index, False)
             publish_warning_idx(index, "ประตูถูกล็อกแล้ว")
             log_event("⚠️ ครบเวลาแต่ยังไม่เปิดประตู → ล็อกกลับทันที")
             return
 
-        # 3) เฝ้าระหว่างเปิด: ตรวจจับการเคลื่อนไหว + เตือนเป็นช่วง ๆ หากค้าง
+        # 3) เฝ้าระหว่างเปิด
         last_warning_time = 0.0
         last_motion_time = time.time()
         last_distance = _read_mm_stable(index, duration_s=0.5)
         log_event("📦 เริ่มตรวจจับการนำเอกสารออก...")
 
         start_open_time = time.time()
+
         while True:
-            # ถ้าปิด "เสถียร" แล้ว → ไปล็อก
             if _door_closed_stable(index, hold_s=DOOR_DEBOUNCE_CLOSE_S):
                 log_event("🚪 ผู้ใช้ปิดประตูแล้ว → ไปล็อก")
                 break
 
-            # อ่านระยะให้เสถียร
             cur = _read_mm_stable(index, duration_s=0.3)
             if (cur != -1 and last_distance != -1 and
                     abs(cur - last_distance) >= max(SENSOR_MOTION_THRESHOLD, 1)):
@@ -440,14 +594,14 @@ def handle_door_unlock(index: int) -> None:
                 last_distance = cur
                 log_dbg(f"🔄 เคลื่อนไหวในช่อง: {cur} mm")
 
-            # เตือนซ้ำหากค้างนาน/ไม่มีการขยับ
+            publish_slot_status_quick_single(index)  # เฉพาะช่องนี้
+
             if (time.time() - last_motion_time > MOTION_INACTIVE_BEFORE_WARN and
                     not i2c_is_door_closed(index) and
                     time.time() - last_warning_time > TIME_REPEAT_WARNING):
                 publish_warning_idx(index, "ลืมปิดประตู !!! กรุณาปิดให้สนิทเพื่อทำการล็อก")
                 last_warning_time = time.time()
 
-            # hard timeout ระหว่างเปิด
             if time.time() - start_open_time > MOTION_TIMEOUT:
                 log_event("⏳ หมดเวลาระหว่างเปิด → ไปขั้นตอนล็อก")
                 break
@@ -461,18 +615,17 @@ def handle_door_unlock(index: int) -> None:
         i2c_set_relay(index, False)
         log_event(f"🔐 ล็อกประตูช่อง {INDEX_TO_SLOT[index]} (Relay OFF)")
 
-        # Double-check ว่าปิดจริงแบบคงที่
         if not _door_closed_stable(index, hold_s=DOOR_DEBOUNCE_CLOSE_S):
             publish_warning_idx(index, "ระบบพยายามล็อกแล้ว แต่ประตูยังไม่ปิดสนิท")
             log_event("⚠️ ล็อกไม่สำเร็จเพราะประตูยังไม่ปิดคงที่")
+            publish_slot_status_quick_single(index)  # เฉพาะช่องนี้
             return
 
-        # แจ้งล็อกสำเร็จหลัง OFF สำเร็จเท่านั้น
         publish_warning_idx(index, "ประตูถูกล็อกแล้ว")
 
-        # 6) อ่านค่าเสถียรสรุปสถานะ
-        time.sleep(0.25)  # quiet window หลังตัดรีเลย์
-        final_value = _read_mm_stable(index, duration_s=SENSOR_STABLE_DURATION)
+        # 6) อ่านสรุปสุดท้ายแบบ 'ดื้อๆ' ก่อน publish
+        time.sleep(0.25)
+        final_value = read_until_ok_or_reinit(index, pre_wait_s=SENSOR_STABLE_DURATION, post_wait_s=1.5)
         slot_status[index].update({
             "capacity_mm": final_value if final_value != -1 else slot_status[index]["capacity_mm"],
             "capacity_percent": mm_to_percent(None if final_value == -1 else final_value),
@@ -481,9 +634,10 @@ def handle_door_unlock(index: int) -> None:
         })
         publish_status_idx(index)
 
+        publish_slot_status_quick_single(index)  # สรุปเฉพาะช่องนี้
+
     except Exception as e:
         log.error(f"[ERR] handle_door_unlock({INDEX_TO_SLOT[index]}): {e}")
-
 
 # =============================================================================
 # TOPIC/PAYLOAD PARSER + MESSAGE DISPATCH
@@ -673,6 +827,9 @@ def slot_worker(slot_id: str, idx: int) -> None:
     while True:
         action, role = slot_queues[slot_id].get()
         try:
+            # 🔔 เริ่มกระพริบไฟเขียวทันทีที่มีคำสั่งสำหรับช่องนี้
+            start_green_blink(idx)
+
             if action == "slot":
                 Storage_compartment(idx)
             elif action == "door":
@@ -683,7 +840,10 @@ def slot_worker(slot_id: str, idx: int) -> None:
             log.exception(f"[worker-{slot_id}] error while handling '{action}'")
             send_warning(slot_id, "เกิดข้อผิดพลาด")
         finally:
+            # 📴 หยุดกระพริบ และคืนสถานะไฟตามจริง (ว่าง=เขียว, เต็ม=แดง)
+            stop_blink(idx, set_final=True)
             slot_queues[slot_id].task_done()
+
 
 
 def start_workers() -> None:
@@ -697,48 +857,61 @@ def start_workers() -> None:
 # =============================================================================
 # STATUS UPDATER (ตัวเดียว ไม่ซ้ำ)
 # =============================================================================
-def publish_all_slots_status_once() -> None:
-    """อ่านค่าทุกช่องแบบเสถียร แล้ว publish สถานะ 1 รอบ + อัปเดต LED ให้ตรงตามเงื่อนไข."""
-    for idx, sid in enumerate(SLOT_IDS):
-        # ให้ตัวช่วย read_slot_and_update_led เป็นตัวกำกับ LED (พร้อม network override)
-        dmm = read_slot_and_update_led(sid)
+# --- Quick scan helpers: อ่าน/อัปเดตทุกช่องแบบเร็ว ---
+scan_lock = threading.Lock()  # กัน pre-scan ซ้อนกัน
 
-        # อ่านเสถียรเพื่อนำไปคำนวณ/แสดงผล (ถ้าอยากเร็วขึ้น สามารถใช้ dmm แทนได้)
-        capacity = _read_mm_stable(idx, duration_s=0.5)
-        is_connected = (capacity != -1)
-        is_open = not i2c_is_door_closed(idx)
-
-        slot_status[idx].update({
-            "capacity_mm": capacity if capacity != -1 else (dmm if dmm is not None else slot_status[idx]["capacity_mm"]),
-            "capacity_percent": mm_to_percent(None if capacity == -1 else capacity),
-            "connection_status": is_connected,
-            "is_open": is_open,
-        })
-        publish_status_idx(idx)
-        time.sleep(0.35)
+def publish_all_slots_status_quick() -> None:
+    """
+    สแกนทุกช่องแบบเร็ว โดยเรียก updater 'ช่องเดียว' ให้ทำงานครบวงจร
+    - ไม่ส่ง -1 ออก MQTT (เก็บค่าเดิมถ้าอ่านไม่ได้)
+    - ไม่ re-init ทั้งบัส
+    """
+    for idx, _sid in enumerate(SLOT_IDS):
+        try:
+            publish_slot_status_quick_single(idx)
+        except Exception as e:
+            log_dbg(f"quick-scan single failed for {INDEX_TO_SLOT[idx]}: {e}")
+        time.sleep(0.10)  # ผ่อน I2C เล็กน้อย
 
 
+
+# =============================================================================
+# STATUS UPDATER (ตัวช่วยอ่านเสถียรครั้งละทุกช่อง)
+# =============================================================================
+# --- Status updater guard flag ---
 _status_updater_started = False
 
-
 def start_status_updater(interval_s: int = 120, initial_delay_s: float = 3.0) -> None:
-    """สตาร์ตเธรดที่ publish สถานะทุก ๆ interval_s วินาที."""
+    """
+    สร้างเธรดที่คอย publish สถานะทุกช่องเป็นรอบ ๆ
+    - ถ้ามี publish_all_slots_status_once() ให้ใช้
+    - ถ้าไม่มี ให้ใช้ publish_all_slots_status_quick()
+    - ป้องกันสตาร์ตซ้ำด้วยแฟล็กและชื่อเธรด
+    """
     global _status_updater_started
     if _status_updater_started:
         return
-    _status_updater_started = True
+
+    for t in threading.enumerate():
+        if t.name == "status-updater" and t.is_alive():
+            _status_updater_started = True
+            return
 
     def _loop():
         log.info("✅ Status updater started")
         time.sleep(initial_delay_s)
         while True:
             try:
-                publish_all_slots_status_once()
+                if 'publish_all_slots_status_once' in globals() and callable(globals()['publish_all_slots_status_once']):
+                    globals()['publish_all_slots_status_once']()
+                else:
+                    publish_all_slots_status_quick()
             except Exception:
                 log.exception("[status-updater] cycle failed")
             time.sleep(interval_s)
 
     threading.Thread(target=_loop, daemon=True, name="status-updater").start()
+    _status_updater_started = True
 
 
 # =============================================================================
@@ -767,7 +940,7 @@ def main() -> None:
 
     start_workers()
     # กำหนดช่วง publish อัตโนมัติ (120 วินาที)
-    start_status_updater(interval_s=120, initial_delay_s=3.0)
+    start_status_updater(interval_s=20, initial_delay_s=3.0)
 
     try:
         while True:
@@ -777,4 +950,14 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] == "diagnose":
+        init_mcp()
+        init_sensors()
+        from shared.hardware_helpers import diagnose_sensor
+        
+        # ทดสอบ sensor 0
+        result = diagnose_sensor(0, samples=50)
+        sys.exit(0)
+    else:
+        main()

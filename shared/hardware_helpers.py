@@ -323,6 +323,15 @@ _LED_ACTIVE_HIGH = os.getenv("SLOT_LED_ACTIVE_HIGH", "1").lower() in ("1", "true
 _led_ready_pinobjs: List = []  # list of MCP pins for ready (by index)
 _led_error_pinobjs: List = []  # list of MCP pins for error (by index)
 
+def set_slot_led_off(mcp_obj: Optional[MCP23017], index: int) -> None:
+    """ปิดทั้งไฟ READY และ ERROR ของช่อง index (ใช้สำหรับจังหวะกระพริบเขียว)."""
+    try:
+        _set_led_pair(index, False, False)
+    except Exception as e:
+        log.debug(f"set_slot_led_off({index}) ignored: {e}")
+
+
+
 def _led_write(pin, on: bool) -> None:
     """เขียนค่าสำหรับ LED โดยคำนึง active-high/low."""
     if pin is None:
@@ -679,41 +688,90 @@ def _clamp_to_range(mm_value: int) -> int:
         return 0
     return int(mm_value)
 
-def read_sensor(sensor_index: int) -> int:
+# --- NEW: ล้างบัฟเฟอร์เซ็นเซอร์ (ต่อช่องหรือทั้งหมด) ----------------------
+def reset_sensor_filter(index: int | None = None) -> None:
     """
-    อ่าน VL53 (index 0..N-1) คืนค่าเป็น mm (int) หรือ -1 ถ้าอ่านไม่ได้
-    จะลอง reopen/XSHUT recover เมื่อ handle หายหรืออ่านพัง
-    - บังคับ inter-sensor delay ต่อ index
-    - ฟิลเตอร์ outlier + median + hysteresis
-    - หัก offset ต่อช่องจาก .env แล้วค่อย clamp
+    เคลียร์ประวัติ (buffers + last_values) เพื่อตัดผลของค่าเก่า
+    index=None = ล้างทุกช่อง
     """
-    # inter-sensor delay (ต่อ 'ตัว' ไม่ใช่รวม)
+    if index is None:
+        for buf in buffers:
+            buf.clear()
+        for i in range(len(last_values)):
+            last_values[i] = None
+        return
+
+    if 0 <= index < len(buffers):
+        buffers[index].clear()
+    if 0 <= index < len(last_values):
+        last_values[index] = None
+
+
+# --- REPLACE: read_sensor ด้วยเวอร์ชันที่รองรับ fresh/ไม่ใช้ฟิลเตอร์ -------
+def read_sensor(sensor_index: int, *, use_filter: bool = True, reset_before: bool = False) -> int:
+    """
+    อ่าน VL53 (mm) หรือ -1 ถ้าอ่านไม่ได้
+
+    Args:
+        use_filter: True=ใช้ outlier+median+hysteresis ตามเดิม
+                    False=อ่าน "สด" ไม่อิง buffer/hysteresis (ยังคง offset+clamp และ inter-delay)
+        reset_before: True=ล้างบัฟเฟอร์ช่องนี้ก่อนอ่าน (เริ่มกรองใหม่จากศูนย์)
+    """
+    # inter-sensor delay
     if sensor_index < len(_last_read_ts):
         dt = time.monotonic() - _last_read_ts[sensor_index]
         if dt < INTER_SENSOR_DELAY_S:
             time.sleep(INTER_SENSOR_DELAY_S - dt)
 
+    if reset_before:
+        reset_sensor_filter(sensor_index)
+
+    # ให้แน่ใจว่ามี handle
     with _handles_guard:
         h_exists = sensor_index in _vl53_handles
     if not h_exists:
         if not _reopen_handle(sensor_index):
-            log.warning(f"Sensor index {sensor_index} not initialized (reopen failed)")
+            if sensor_index < len(_last_read_ts):
+                _last_read_ts[sensor_index] = time.monotonic()
             return -1
 
+    # --- ฟังก์ชันอ่านดิบ 1 ครั้ง (ไม่มีฟิลเตอร์) ---
+    def _read_raw_once() -> int:
+        try:
+            raw = read_mm(_vl53_handles, sensor_index)
+            if raw is None or raw <= 0 or raw > 2000:
+                # ลอง reopen อีกรอบ
+                if _reopen_handle(sensor_index):
+                    raw = read_mm(_vl53_handles, sensor_index)
+            if raw is None or raw <= 0 or raw > 2000:
+                return -1
+            # offset+clamp ยังทำปกติ (แต่ไม่แตะ buffer)
+            val = _apply_offset_by_slot_index(sensor_index, int(raw))
+            val = _clamp_to_range(val)
+            return val
+        except Exception:
+            return -1
+
+    # --- โหมดไม่ใช้ฟิลเตอร์ (สด) ---
+    if not use_filter:
+        v = _read_raw_once()
+        if sensor_index < len(_last_read_ts):
+            _last_read_ts[sensor_index] = time.monotonic()
+        return v
+
+    # --- โหมดเดิม (มี outlier+median+hysteresis) ---
     try:
         raw = read_mm(_vl53_handles, sensor_index)
         if raw is None or raw <= 0 or raw > 2000:
             if _reopen_handle(sensor_index):
                 raw = read_mm(_vl53_handles, sensor_index)
         if raw is None or raw <= 0 or raw > 2000:
-            # stamp time แม้ fail เพื่อลดการ loop ถี่เกิน
             if sensor_index < len(_last_read_ts):
                 _last_read_ts[sensor_index] = time.monotonic()
             return -1
 
         filtered = _apply_outlier_reject(sensor_index, int(raw))
-        stable = _smooth_and_stabilize(sensor_index, filtered)
-        # หัก offset ต่อช่อง แล้วค่อย clamp
+        stable = _smooth_and_stabilize(sensor_index, filtered)  # <= ใช้ buffer/hysteresis
         stable = _apply_offset_by_slot_index(sensor_index, stable)
         val = _clamp_to_range(stable)
 
@@ -721,11 +779,27 @@ def read_sensor(sensor_index: int) -> int:
             _last_read_ts[sensor_index] = time.monotonic()
         return val
 
-    except Exception as e:
-        log.error(f"Error reading sensor {sensor_index}: {e}")
+    except Exception:
         if sensor_index < len(_last_read_ts):
             _last_read_ts[sensor_index] = time.monotonic()
         return -1
+
+
+# --- (ตัวเลือกเสริม) อ่านสดแบบเก็บสถิติสั้น ๆ โดยไม่แตะ buffer -----------
+def read_sensor_fresh(sensor_index: int, samples: int = 3, gap_s: float = 0.02) -> int:
+    """
+    อ่านแบบไม่ใช้ฟิลเตอร์/บัฟเฟอร์เดิม (สดล้วน) จำนวน samples ครั้ง
+    แล้วคืน median; ถ้าอ่านไม่ได้เลยคืน -1
+    """
+    reset_sensor_filter(sensor_index)
+    vals = []
+    for _ in range(max(1, samples)):
+        v = read_sensor(sensor_index, use_filter=False)
+        if v != -1:
+            vals.append(v)
+        time.sleep(gap_s)
+    return int(statistics.median(vals)) if vals else -1
+
 
 # =============================================================================
 # Utilities for diagnostics
@@ -737,3 +811,64 @@ def sensor_addr(index: int) -> Optional[int]:
 def vl53_address_map() -> Dict[int, tuple[int, str]]:
     """คืน mapping {index: (i2c_addr, backend)} สำหรับ debug."""
     return {i: (h.addr, h.backend) for i, h in _vl53_handles.items()}
+
+
+def diagnose_sensor(index: int, samples: int = 10) -> dict:
+    """
+    ฟังก์ชัน debug: อ่าน sensor หลายครั้งแล้วสรุปผล
+    
+    Usage:
+        from shared.hardware_helpers import diagnose_sensor
+        result = diagnose_sensor(0, samples=20)
+        print(result)
+    """
+    results = []
+    failures = 0
+    
+    print(f"\n🔍 Diagnosing sensor {index} ({samples} samples)...")
+    
+    for i in range(samples):
+        try:
+            val = read_sensor(index)
+            results.append(val)
+            
+            if val == -1:
+                failures += 1
+                print(f"  [{i+1:2d}] ❌ FAIL")
+            else:
+                print(f"  [{i+1:2d}] ✅ {val:3d}mm")
+            
+            time.sleep(0.1)
+            
+        except Exception as e:
+            failures += 1
+            print(f"  [{i+1:2d}] ❌ ERROR: {e}")
+    
+    valid = [v for v in results if v != -1]
+    
+    report = {
+        "sensor_index": index,
+        "total_samples": samples,
+        "successful": len(valid),
+        "failed": failures,
+        "success_rate": f"{(len(valid)/samples)*100:.1f}%",
+        "values": valid,
+    }
+    
+    if valid:
+        report.update({
+            "min": min(valid),
+            "max": max(valid),
+            "mean": sum(valid) / len(valid),
+            "median": statistics.median(valid),
+            "std_dev": statistics.stdev(valid) if len(valid) > 1 else 0,
+        })
+    
+    print(f"\n📊 Summary:")
+    print(f"  Success: {report['successful']}/{samples} ({report['success_rate']})")
+    if valid:
+        print(f"  Range: {report['min']}-{report['max']}mm")
+        print(f"  Median: {report['median']:.1f}mm")
+        print(f"  Std Dev: {report['std_dev']:.1f}mm")
+    
+    return report
