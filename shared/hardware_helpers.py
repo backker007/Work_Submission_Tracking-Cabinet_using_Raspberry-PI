@@ -1,4 +1,3 @@
-# shared/hardware_helpers.py
 # -*- coding: utf-8 -*-
 """
 Hardware helpers for Smart Locker
@@ -28,6 +27,7 @@ import threading
 from collections import deque
 from typing import Dict, List, Optional
 
+# ---- HW imports (Blinka) ----------------------------------------------------
 import board
 import busio
 import digitalio
@@ -35,6 +35,7 @@ from digitalio import Direction, Pull
 from adafruit_pca9685 import PCA9685
 from adafruit_mcp230xx.mcp23017 import MCP23017
 
+# NOTE: relative import because this file is under 'shared'
 from .vl53l0x_init import (
     init_vl53x_four,
     read_mm,
@@ -44,7 +45,7 @@ from .vl53l0x_init import (
     _raw_set_address_confirm as _vl53_set_addr,
     _open_reader_with_retries as _vl53_open_with_retries,
 )
-from .topics import SLOT_IDS
+from .topics import SLOT_IDS  # จำนวนช่องใช้งาน
 
 log = logging.getLogger("hw")
 
@@ -663,8 +664,9 @@ def read_sensor(sensor_index: int, *, use_filter: Optional[bool] = None, reset_b
             val = _apply_offset_by_slot_index(sensor_index, int(raw))
             val = _clamp_to_range(val)
             # legacy: ถ้าตั้งให้ fail เมื่อเป็นศูนย์ → คืน -1
-            if (not use_filter) and LEGACY_FAIL_ON_ZERO and val == 0:
-                return -1
+            if (not use_filter) and READ_MODE == "legacy":
+                if os.getenv("VL53_LEGACY_FAIL_ON_ZERO", "0").lower() in ("1", "true", "yes") and val == 0:
+                    return -1
             return val
         except Exception:
             return -1

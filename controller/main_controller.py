@@ -62,7 +62,7 @@ from shared.topics import (  # type: ignore
 from shared.hardware_helpers import (  # type: ignore
     init_mcp, init_sensors,
     read_sensor, move_servo_180, is_door_reliably_closed,
-    mcp_pins, relay_pins, CHANGE_THRESHOLD, is_slot_full,
+    mcp_pins, relay_pins, is_slot_full,
     mcp,
     set_slot_led_ready, set_slot_led_error, set_slot_led_off,
     vl53_address_map, internet_ok, power_down_sensors, ensure_sensors_ready,
@@ -73,6 +73,7 @@ AUTO_POWERDOWN = os.getenv("VL53_AUTO_POWERDOWN", "1").lower() in ("1", "true", 
 
 # --- Role helpers ---
 from shared.role_helpers import can_open_slot, can_open_door, is_valid_role  # type: ignore
+_defer_close_flags = [False for _ in SLOT_IDS]
 
 # =============================================================================
 # CONFIG (.env)
@@ -207,6 +208,66 @@ def i2c_set_relay(index: int, value: bool) -> None:
         relay_pins[index].value = bool(value)
 
 # =============================================================================
+# READ STABILIZERS (debounce)
+# =============================================================================
+def _read_mm_stable(index: int, duration_s: float = 0.8, step_s: float = 0.1, retries: int = 1) -> int:
+    vals = []
+    t0 = time.time()
+    while time.time() - t0 < duration_s:
+        v = i2c_read_sensor_fresh(index)
+        if isinstance(v, (int, float)) and v > 0:
+            vals.append(v)
+        time.sleep(step_s)
+    if not vals and retries > 0:
+        time.sleep(0.2)
+        return _read_mm_stable(index, duration_s=0.4, step_s=0.1, retries=retries - 1)
+    return int(statistics.median(vals)) if vals else -1
+
+def _door_closed_stable(index: int, hold_s: float | None = None, step_s: float = 0.05) -> bool:
+    if hold_s is None:
+        hold_s = DOOR_DEBOUNCE_CLOSE_S
+    t_end = time.time() + max(0.2, hold_s)
+    while time.time() < t_end:
+        if not i2c_is_door_closed(index):
+            return False
+        time.sleep(step_s)
+    return True
+
+def _door_open_stable(index: int, hold_s: float | None = None, step_s: float = 0.05) -> bool:
+    if hold_s is None:
+        hold_s = DOOR_DEBOUNCE_OPEN_S
+    t_end = time.time() + max(0.2, hold_s)
+    while time.time() < t_end:
+        if i2c_is_door_closed(index):
+            return False
+        time.sleep(step_s)
+    return True
+
+# ---- NEW: Latched door state (เปลี่ยนสถานะเมื่อยืนยันเสถียรเท่านั้น) ----
+def _latched_is_open(idx: int) -> bool:
+    """
+    ยึดสถานะเดิมไว้ และยอมเปลี่ยนเฉพาะเมื่อยืนยันแบบ stable debounce แล้วเท่านั้น
+    - เดิมเปิด (True) → จะยอมเปลี่ยนเป็นปิด (False) เมื่อ _door_closed_stable(...) ผ่านเท่านั้น
+    - เดิมปิด (False) → จะยอมเปลี่ยนเป็นเปิด (True) เมื่อ _door_open_stable(...) ผ่านเท่านั้น
+    """
+    prev = bool(slot_status[idx].get("is_open", False))
+    try:
+        snap_closed = i2c_is_door_closed(idx)   # สแน็ปช็อตเร็ว
+    except Exception:
+        return prev
+
+    if prev:
+        # เดิมเปิด → เปลี่ยนเป็นปิดต่อเมื่อปิดเสถียร
+        if snap_closed and _door_closed_stable(idx, hold_s=DOOR_DEBOUNCE_CLOSE_S):
+            return False
+        return True
+    else:
+        # เดิมปิด → เปลี่ยนเป็นเปิดต่อเมื่อเปิดเสถียร
+        if (not snap_closed) and _door_open_stable(idx, hold_s=DOOR_DEBOUNCE_OPEN_S):
+            return True
+        return False
+
+# =============================================================================
 # LED-aware read helper + quick publisher
 # =============================================================================
 def publish_slot_status_quick_single(idx: int) -> None:
@@ -227,10 +288,17 @@ def publish_slot_status_quick_single(idx: int) -> None:
     except Exception:
         pass
 
+    # --- คำนวณสถานะประตูด้วย latch ตามปกติ ---
     try:
-        is_open = not i2c_is_door_closed(idx)
+        latched = _latched_is_open(idx)
     except Exception:
-        is_open = slot_status[idx].get("is_open", False)
+        latched = slot_status[idx].get("is_open", False)
+
+    # >>> PATCH: ถ้าอยู่ในโหมดหน่วงการปิด และเดิม open อยู่ ห้ามพลิกเป็นปิด
+    if _defer_close_flags[idx] and slot_status[idx].get("is_open", False) and (latched is False):
+        is_open = True
+    else:
+        is_open = latched
 
     prev_mm = slot_status[idx]["capacity_mm"]
     mm_now = prev_mm if (not isinstance(v, (int, float)) or v < 0) else int(v)
@@ -243,6 +311,42 @@ def publish_slot_status_quick_single(idx: int) -> None:
         "is_open": is_open,
     })
     publish_status_idx(idx)
+
+# =============================================================================
+# Publish helper (no-read): อัปเดตค่าแล้ว publish โดย "ไม่แตะเซ็นเซอร์"
+# =============================================================================
+def publish_status_no_read(idx: int, *, mm: int | None = None,
+                           is_open: bool | None = None,
+                           connected: bool | None = None) -> None:
+    sid = INDEX_TO_SLOT[idx]
+    st = slot_status[idx]
+
+    if mm is None:
+        mm = int(st.get("capacity_mm", 0))
+    if is_open is None:
+        is_open = bool(st.get("is_open", False))
+    if connected is None:
+        connected = internet_ok()
+
+    st.update({
+        "capacity_mm": mm,
+        "capacity_percent": mm_to_percent(mm),
+        "connection_status": connected,
+        "is_open": is_open,
+    })
+
+    # อัปเดต LED จากค่าล่าสุด (ไม่อ่านเซ็นเซอร์)
+    try:
+        if internet_ok():
+            if is_slot_full(sid, mm):
+                set_slot_led_error(mcp, idx)
+            else:
+                set_slot_led_ready(mcp, idx)
+    except Exception:
+        pass
+
+    publish_status_idx(idx)
+
 
 def read_until_ok_or_reinit(index: int, pre_wait_s: float = 3.0, post_wait_s: float = 3.0, step_s: float = 0.12) -> int:
     t0 = time.time()
@@ -303,42 +407,6 @@ def send_warning(slot_id: str, message: str, extra: dict | None = None) -> None:
         return
     mid = publish_warning(mqtt_client, message, slot_id, extra)
     log.info(f"[PUB] warning {slot_id} mid={mid} message={message} extra={extra}")
-
-# =============================================================================
-# READ STABILIZERS
-# =============================================================================
-def _read_mm_stable(index: int, duration_s: float = 0.8, step_s: float = 0.1, retries: int = 1) -> int:
-    vals = []
-    t0 = time.time()
-    while time.time() - t0 < duration_s:
-        v = i2c_read_sensor_fresh(index)
-        if isinstance(v, (int, float)) and v > 0:
-            vals.append(v)
-        time.sleep(step_s)
-    if not vals and retries > 0:
-        time.sleep(0.2)
-        return _read_mm_stable(index, duration_s=0.4, step_s=0.1, retries=retries - 1)
-    return int(statistics.median(vals)) if vals else -1
-
-def _door_closed_stable(index: int, hold_s: float | None = None, step_s: float = 0.05) -> bool:
-    if hold_s is None:
-        hold_s = DOOR_DEBOUNCE_CLOSE_S
-    t_end = time.time() + max(0.2, hold_s)
-    while time.time() < t_end:
-        if not i2c_is_door_closed(index):
-            return False
-        time.sleep(step_s)
-    return True
-
-def _door_open_stable(index: int, hold_s: float | None = None, step_s: float = 0.05) -> bool:
-    if hold_s is None:
-        hold_s = DOOR_DEBOUNCE_OPEN_S
-    t_end = time.time() + max(0.2, hold_s)
-    while time.time() < t_end:
-        if i2c_is_door_closed(index):
-            return False
-        time.sleep(step_s)
-    return True
 
 # =============================================================================
 # STORAGE COMPARTMENT (เปิดช่องใส่ของ) – สั่งเซอร์โวก่อน ค่อยปลุกเซนเซอร์
@@ -433,6 +501,10 @@ def Storage_compartment(index: int) -> None:
 # DOOR UNLOCK (ปลดล็อกประตู) – สั่งรีเลย์ก่อน ค่อยปลุกเซนเซอร์
 # =============================================================================
 def handle_door_unlock(index: int) -> None:
+    """
+    ปลดล็อกประตู + โหมดหน่วงการปิด (defer-close)
+    เฟรมสุดท้ายหลังล็อกจะ publish ด้วยค่าล่าสุด (no-read) เพื่อกัน reopen/recover
+    """
     try:
         # 1) ปลดล็อกก่อน
         pulse = SOLENOID_PULSE_MS
@@ -443,13 +515,13 @@ def handle_door_unlock(index: int) -> None:
             log_event(f"🔓 เปิดประตูช่อง {INDEX_TO_SLOT[index]} (Relay ON)")
             time.sleep(0.25)
 
-        # 2) ปลุก/เตรียมเซนเซอร์ทีหลัง
+        # 2) ค่อยปลุกเซ็นเซอร์
         try:
             ensure_sensors_ready()
         except Exception as e:
             log_dbg(f"ensure_sensors_ready() failed (handle_door_unlock): {e}")
 
-        # 3) snapshot สถานะ
+        # 3) snapshot แรก (อ่านตามปกติได้)
         publish_slot_status_quick_single(index)
 
         # 4) รอให้เปิดจริง
@@ -460,6 +532,10 @@ def handle_door_unlock(index: int) -> None:
             if _door_open_stable(index, hold_s=DOOR_DEBOUNCE_OPEN_S):
                 publish_warning_idx(index, "ประตูถูกเปิดแล้ว")
                 log_event("✅ ประตูถูกเปิดแล้ว")
+
+                # เริ่มโหมดหน่วงการปิด
+                _defer_close_flags[index] = True
+                slot_status[index]["is_open"] = True
 
                 if SOLENOID_PULSE_MS == 0 and SOLENOID_KEEP_ON_WHILE_OPEN:
                     i2c_set_relay(index, True)
@@ -477,7 +553,7 @@ def handle_door_unlock(index: int) -> None:
             log_event("⚠️ ครบเวลาแต่ยังไม่เปิดประตู → ล็อกกลับทันที")
             return
 
-        # 5) เฝ้าระหว่างเปิด
+        # 5) เฝ้าระหว่างเปิด (อ่านตามปกติได้; โหมด defer กัน is_open ไม่ให้ False หลุด)
         last_warning_time = 0.0
         last_motion_time = time.time()
         last_distance = _read_mm_stable(index, duration_s=0.5)
@@ -486,7 +562,10 @@ def handle_door_unlock(index: int) -> None:
         start_open_time = time.time()
 
         while True:
+            # ตรวจปิดเสถียรก่อน แล้วค่อยปล่อยให้ปิด session
             if _door_closed_stable(index, hold_s=DOOR_DEBOUNCE_CLOSE_S):
+                _defer_close_flags[index] = False
+                slot_status[index]["is_open"] = False
                 log_event("🚪 ผู้ใช้ปิดประตูแล้ว → ไปล็อก")
                 break
 
@@ -500,8 +579,8 @@ def handle_door_unlock(index: int) -> None:
             publish_slot_status_quick_single(index)
 
             if (time.time() - last_motion_time > MOTION_INACTIVE_BEFORE_WARN and
-                    not i2c_is_door_closed(index) and
-                    time.time() - last_warning_time > TIME_REPEAT_WARNING):
+                not i2c_is_door_closed(index) and
+                time.time() - last_warning_time > TIME_REPEAT_WARNING):
                 publish_warning_idx(index, "ลืมปิดประตู !!! กรุณาปิดให้สนิทเพื่อทำการล็อก")
                 last_warning_time = time.time()
 
@@ -511,7 +590,7 @@ def handle_door_unlock(index: int) -> None:
 
             time.sleep(SENSOR_CHECK_INTERVAL)
 
-        # 6) กันเด้งเล็กน้อย แล้วสั่งล็อก
+        # 6) กันเด้งเล็กน้อย แล้วสั่งล็อกรีเลย์
         time.sleep(0.3)
         i2c_set_relay(index, False)
         log_event(f"🔐 ล็อกประตูช่อง {INDEX_TO_SLOT[index]} (Relay OFF)")
@@ -519,24 +598,29 @@ def handle_door_unlock(index: int) -> None:
         if not _door_closed_stable(index, hold_s=DOOR_DEBOUNCE_CLOSE_S):
             publish_warning_idx(index, "ระบบพยายามล็อกแล้ว แต่ประตูยังไม่ปิดสนิท")
             log_event("⚠️ ล็อกไม่สำเร็จเพราะประตูยังไม่ปิดคงที่")
-            publish_slot_status_quick_single(index)
+            # NOTE: ยังไม่อ่านเซ็นเซอร์เพิ่ม
+            publish_status_no_read(index, is_open=False)  # ใช้ค่าล่าสุด
             return
 
         publish_warning_idx(index, "ประตูถูกล็อกแล้ว")
 
-        # 7) สรุปสถานะท้ายสุด
+        # 7) เฟรมสรุปท้ายสุด **แบบไม่อ่าน**: ส่งค่าล่าสุดจริง ๆ ก่อนปิดเซ็นเซอร์
         time.sleep(0.25)
-        publish_slot_status_quick_single(index)
+        # ใช้ค่า mm ล่าสุดที่สะสมระหว่างเปิด (อยู่ใน slot_status แล้ว)
+        final_mm = int(slot_status[index].get("capacity_mm", 0))
+        publish_status_no_read(index, mm=final_mm, is_open=False)
 
     except Exception as e:
         log.error(f"[ERR] handle_door_unlock({INDEX_TO_SLOT[index]}): {e}")
 
     finally:
+        _defer_close_flags[index] = False  # safety
         if AUTO_POWERDOWN:
             try:
                 power_down_sensors()
             except Exception as e:
                 log_dbg(f"auto powerdown after handle_door_unlock failed: {e}")
+
 
 # =============================================================================
 # TOPIC/PAYLOAD PARSER + MESSAGE DISPATCH
@@ -794,6 +878,24 @@ def main() -> None:
     except KeyboardInterrupt:
         pass
 
+# ---- NEW: Latched door state (คงไว้ได้ แต่จะถูกโหมด defer ปิดทับภายหลัง) ----publish_slot_status_quick_single
+def _latched_is_open(idx: int) -> bool:
+    prev = bool(slot_status[idx].get("is_open", False))
+    try:
+        snap_closed = i2c_is_door_closed(idx)
+    except Exception:
+        return prev
+
+    if prev:
+        if snap_closed and _door_closed_stable(idx, hold_s=DOOR_DEBOUNCE_CLOSE_S):
+            return False
+        return True
+    else:
+        if (not snap_closed) and _door_open_stable(idx, hold_s=DOOR_DEBOUNCE_OPEN_S):
+            return True
+        return False
+
+
 if __name__ == "__main__":
     import sys
 
@@ -806,9 +908,8 @@ if __name__ == "__main__":
         init_mcp()
         init_sensors()
 
-        # ถ้า diagnose_sensor อยู่ใน shared.hardware_helpers ให้ import ตามนี้
         from shared.hardware_helpers import diagnose_sensor
         diagnose_sensor(idx, samples=n)
         sys.exit(0)
-    else:   
-        main()
+    else:
+        main()  # shared/hardware_helpers.py
