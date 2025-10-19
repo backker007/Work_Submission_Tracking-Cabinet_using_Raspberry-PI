@@ -68,7 +68,7 @@ from shared.hardware_helpers import (  # type: ignore
     set_slot_led_ready, set_slot_led_error, set_slot_led_off,   # ← เพิ่มฟังก์ชันนี้
     vl53_address_map, internet_ok,
 )
-
+from shared.hardware_helpers import read_sensor as _read_sensor_core, reset_sensor_filter, read_sensor_fresh
 
 # --- Role helpers ---
 from shared.role_helpers import can_open_slot, can_open_door, is_valid_role  # type: ignore
@@ -211,10 +211,11 @@ def stop_blink(idx: int, set_final: bool = True) -> None:
 # I²C SHORT-LOCK HELPERS
 # =============================================================================
 def i2c_read_sensor(index: int) -> int:
-    """อ่าน VL53 แบบเข้าถึง I2C ด้วย lock สั้น ๆ."""
+    """อ่าน VL53 แบบ 'สด' หลายครั้งแล้วเอา median (ไม่ใช้บัฟเฟอร์ยาว)."""
     with i2c_lock:
-        return read_sensor(index)
-# เพิ่มใกล้ๆ i2c_read_sensor เดิม
+        return read_sensor_fresh(index, samples=3, gap_s=0.02)
+
+
 from shared.hardware_helpers import read_sensor as _read_sensor_core, reset_sensor_filter, read_sensor_fresh
 
 def i2c_read_sensor_fresh(index: int) -> int:
@@ -252,33 +253,35 @@ def i2c_set_relay(index: int, value: bool) -> None:
 # =============================================================================
 def read_slot_and_update_led(slot_id: str):
     idx = SLOT_TO_INDEX[slot_id]
+
+    # ถ้าเน็ตหลุด ปล่อยให้ watchdog คุมไฟ (แดงกระพริบ) อ่านเฉยๆ แบบ one-shot เพื่อ warm
     if not internet_ok():
         try:
-            _ = read_sensor(idx)
+            _ = i2c_read_sensor_once_raw(idx)
         except Exception:
             pass
         return None
 
+    # อ่านสด (median สั้น ๆ) + fallback ฟื้นเฉพาะช่อง
     try:
-        distance_mm = read_sensor(idx)
-        # 🔴 สำคัญ: 0 หรือค่าติดลบ → ถือว่า invalid
-        if not isinstance(distance_mm, (int, float)) or distance_mm <= 0:
-            distance_mm = -1
-        _i2c_fail_counts[slot_id] = 0 if distance_mm != -1 else _i2c_fail_counts[slot_id] + 1
+        v = i2c_read_sensor_fresh(idx)
+        if not isinstance(v, (int, float)) or v <= 0:
+            v = read_until_ok_or_reinit(idx, pre_wait_s=1.0, post_wait_s=1.0, step_s=0.12)
     except Exception:
-        _i2c_fail_counts[slot_id] += 1
-        return None
+        v = -1
 
-    if _is_slot_blinking(idx):
-        return distance_mm
+    # อย่าทับ LED ถ้าช่องกำลังกระพริบอยู่
+    if not _is_slot_blinking(idx) and v != -1 and internet_ok():
+        try:
+            if is_slot_full(slot_id, v):
+                set_slot_led_error(mcp, idx)
+            else:
+                set_slot_led_ready(mcp, idx)
+        except Exception:
+            pass
 
-    if distance_mm != -1:
-        if is_slot_full(slot_id, distance_mm):
-            set_slot_led_error(mcp, idx)
-        else:
-            set_slot_led_ready(mcp, idx)
+    return v
 
-    return distance_mm
 
 def publish_slot_status_quick_single(idx: int) -> None:
     sid = INDEX_TO_SLOT[idx]
@@ -333,7 +336,7 @@ def read_until_ok_or_reinit(index: int, pre_wait_s: float = 3.0, post_wait_s: fl
     except Exception:
         pass
 
-    # 🔥 ทิ้งค่า 2-3 ช็อตหลัง reopen เพื่อวอร์มอัพ
+    # ทิ้งค่า 2-3 ช็อตหลัง reopen เพื่อวอร์มอัพ
     for _ in range(3):
         try:
             _ = i2c_read_sensor_once_raw(index)
@@ -401,7 +404,6 @@ def _read_mm_stable(index: int, duration_s: float = 0.8, step_s: float = 0.1, re
         time.sleep(0.2)
         return _read_mm_stable(index, duration_s=0.4, step_s=0.1, retries=retries - 1)
     return int(statistics.median(vals)) if vals else -1
-
 
 def _door_closed_stable(index: int, hold_s: float | None = None, step_s: float = 0.05) -> bool:
     """อ่านสถานะประตู 'ปิด' ให้คงที่ต่อเนื่องตาม hold_s (debounce)."""
@@ -940,7 +942,7 @@ def main() -> None:
 
     start_workers()
     # กำหนดช่วง publish อัตโนมัติ (120 วินาที)
-    start_status_updater(interval_s=20, initial_delay_s=3.0)
+    start_status_updater(interval_s=120, initial_delay_s=3.0)
 
     try:
         while True:
@@ -960,4 +962,4 @@ if __name__ == "__main__":
         result = diagnose_sensor(0, samples=50)
         sys.exit(0)
     else:
-        main()
+        main()  
