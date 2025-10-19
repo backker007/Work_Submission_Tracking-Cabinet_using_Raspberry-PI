@@ -78,9 +78,10 @@ VL53_ADDR_SET_GAP_S = float(os.getenv("VL53_ADDR_SET_GAP_S", "0.08"))
 VL53_ALLOW_ADAFRUIT = os.getenv("VL53_ALLOW_ADAFRUIT", "1").lower() in ("1", "true", "yes")
 
 SMOOTH_WINDOW = int(os.getenv("VL53_SMOOTH_WINDOW", "5"))
-OUTLIER_MM = int(os.getenv("VL53_OUTLIER_MM", "15"))
+OUTLIER_MM = int(os.getenv("VL53_OUTLIER_MM", "20"))
 CHANGE_THRESHOLD = int(os.getenv("CHANGE_THRESHOLD", "5"))
 
+# อ่านต่อเนื่อง/ดีเลย์ระหว่างเซ็นเซอร์ — ใช้ค่าจาก .env (ถ้าซ้ำหลายบรรทัด ระบบจะใช้ค่าบรรทัดสุดท้าย)
 VL53_CONTINUOUS = os.getenv("VL53_CONTINUOUS", "0").lower() in ("1", "true", "yes")
 INTER_SENSOR_DELAY_S = float(os.getenv("VL53_INTER_DELAY_S", "0.015"))
 
@@ -95,7 +96,6 @@ _xshut_env = os.getenv("VL53_XSHUT_PINS", "17")
 _xshut_gpio = [int(p.strip()) for p in _xshut_env.split(",") if p.strip()]
 XSHUT_PINS = [digitalio.DigitalInOut(getattr(board, f"D{gpio}")) for gpio in _xshut_gpio]
 
-INIT_ALL_LOW = os.getenv("VL53_INIT_ALL_LOW", "1").lower() in ("1", "true", "yes")
 BUS_MODE = os.getenv("VL53_BUS_MODE", "multi").strip().lower()
 
 DOOR_SAMPLES = int(os.getenv("DOOR_SAMPLES", "20"))
@@ -107,7 +107,8 @@ DOOR_SENSOR_INVERT = os.getenv("DOOR_SENSOR_INVERT", "0").lower() in ("1", "true
 
 SERVO_SETTLE_S = float(os.getenv("SERVO_SETTLE_S", "0.7"))
 
-DEFAULT_FULL_THRESHOLD_MM = int(os.getenv("DEFAULT_FULL_THRESHOLD_MM", "40"))
+# ===== Distance-based Slot 'Full' detection =====
+DEFAULT_FULL_THRESHOLD_MM = int(os.getenv("DEFAULT_FULL_THRESHOLD_MM", "80"))  # ใช้ 80mm ตาม .env
 SLOT_FULL_THRESHOLD_MM = {sid: DEFAULT_FULL_THRESHOLD_MM for sid in SLOT_IDS}
 
 def is_slot_full(slot_id: str, distance_mm: Optional[float]) -> bool:
@@ -116,6 +117,11 @@ def is_slot_full(slot_id: str, distance_mm: Optional[float]) -> bool:
     thr = SLOT_FULL_THRESHOLD_MM.get(slot_id, DEFAULT_FULL_THRESHOLD_MM)
     return distance_mm <= thr
 
+# ===== Read mode (legacy vs stable) =====
+READ_MODE = os.getenv("VL53_READ_MODE", "stable").strip().lower()  # "legacy" | "stable"
+LEGACY_FAIL_ON_ZERO = os.getenv("VL53_LEGACY_FAIL_ON_ZERO", "0").lower() in ("1", "true", "yes")
+
+# ===== Network watchdog / LED policy =====
 NET_WATCHDOG = os.getenv("NET_WATCHDOG", "1").lower() in ("1", "true", "yes")
 NET_CHECK_HOST = os.getenv("NET_CHECK_HOST") or os.getenv("MQTT_HOST") or "8.8.8.8"
 NET_CHECK_PORT = int(os.getenv("NET_CHECK_PORT") or os.getenv("MQTT_PORT") or "53")
@@ -523,9 +529,6 @@ def init_sensors() -> None:
     _last_read_ts.clear()
 
     init_xshuts()
-    if BUS_MODE != "multi":
-        print(f"⚠️ BUS_MODE={BUS_MODE} (ชุดนี้รองรับ multi/XSHUT เป็นหลัก)")
-
     driver = _make_xshut_driver()
     sensor_count = min(len(SLOT_IDS), len(XSHUT_PINS))
     new_addrs = [ADDRESS_BASE + i for i in range(sensor_count)]
@@ -601,6 +604,7 @@ def _apply_offset_by_slot_index(sensor_index: int, mm_value: int) -> int:
     return int(mm_value) - off
 
 def _clamp_to_range(mm_value: int) -> int:
+    # MM ต่ำกว่า TARGET_MIN_MM จะ clamp เป็น 0 (แนบชิด)
     if mm_value < TARGET_MIN_MM:
         return 0
     return int(mm_value)
@@ -617,8 +621,18 @@ def reset_sensor_filter(index: int | None = None) -> None:
     if 0 <= index < len(last_values):
         last_values[index] = None
 
-def read_sensor(sensor_index: int, *, use_filter: bool = True, reset_before: bool = False) -> int:
+def read_sensor(sensor_index: int, *, use_filter: Optional[bool] = None, reset_before: bool = False) -> int:
+    """
+    อ่าน VL53 (mm) หรือ -1 ถ้าอ่านไม่ได้
+
+    Args:
+        use_filter: None=เลือกตาม READ_MODE; True=ใช้ฟิลเตอร์; False=อ่านสด
+        reset_before: ล้างบัฟเฟอร์ช่องนี้ก่อนอ่าน
+    """
     ensure_sensors_ready()
+
+    if use_filter is None:
+        use_filter = (READ_MODE != "legacy")
 
     if sensor_index < len(_last_read_ts):
         dt = time.monotonic() - _last_read_ts[sensor_index]
@@ -628,6 +642,7 @@ def read_sensor(sensor_index: int, *, use_filter: bool = True, reset_before: boo
     if reset_before:
         reset_sensor_filter(sensor_index)
 
+    # ให้แน่ใจว่ามี handle
     with _handles_guard:
         h_exists = sensor_index in _vl53_handles
     if not h_exists:
@@ -636,6 +651,7 @@ def read_sensor(sensor_index: int, *, use_filter: bool = True, reset_before: boo
                 _last_read_ts[sensor_index] = time.monotonic()
             return -1
 
+    # --- ฟังก์ชันอ่านดิบ 1 ครั้ง (ไม่มีฟิลเตอร์) ---
     def _read_raw_once() -> int:
         try:
             raw = read_mm(_vl53_handles, sensor_index)
@@ -646,16 +662,21 @@ def read_sensor(sensor_index: int, *, use_filter: bool = True, reset_before: boo
                 return -1
             val = _apply_offset_by_slot_index(sensor_index, int(raw))
             val = _clamp_to_range(val)
+            # legacy: ถ้าตั้งให้ fail เมื่อเป็นศูนย์ → คืน -1
+            if (not use_filter) and LEGACY_FAIL_ON_ZERO and val == 0:
+                return -1
             return val
         except Exception:
             return -1
 
+    # --- โหมดไม่ใช้ฟิลเตอร์ (legacy/raw) ---
     if not use_filter:
         v = _read_raw_once()
         if sensor_index < len(_last_read_ts):
             _last_read_ts[sensor_index] = time.monotonic()
         return v
 
+    # --- โหมด stable (มี outlier+median+hysteresis) ---
     try:
         raw = read_mm(_vl53_handles, sensor_index)
         if raw is None or raw <= 0 or raw > 2000:
