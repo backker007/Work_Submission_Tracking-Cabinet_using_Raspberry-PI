@@ -66,10 +66,10 @@ from shared.hardware_helpers import (  # type: ignore
     mcp_pins, relay_pins, CHANGE_THRESHOLD, is_slot_full,
     mcp,
     set_slot_led_ready, set_slot_led_error, set_slot_led_off,   # ← เพิ่มฟังก์ชันนี้
-    vl53_address_map, internet_ok,
+    vl53_address_map, internet_ok,power_down_sensors, ensure_sensors_ready,
 )
 from shared.hardware_helpers import read_sensor as _read_sensor_core, reset_sensor_filter, read_sensor_fresh
-
+AUTO_POWERDOWN = os.getenv("VL53_AUTO_POWERDOWN", "1").lower() in ("1", "true", "yes")
 # --- Role helpers ---
 from shared.role_helpers import can_open_slot, can_open_door, is_valid_role  # type: ignore
 from shared.hardware_helpers import read_sensor as _read_sensor_core, reset_sensor_filter, read_sensor_fresh
@@ -438,11 +438,17 @@ def Storage_compartment(index: int) -> None:
     - อ่าน baseline ด้วย read_until_ok_or_reinit()
     - ไม่สแกนช่องอื่น
     """
+    # 🔌 ให้แน่ใจว่าเซ็นเซอร์พร้อม (lazy init ถ้าเพิ่งถูกปิดไป)
+    try:
+        ensure_sensors_ready()
+    except Exception as e:
+        log_dbg(f"ensure_sensors_ready() failed (Storage_compartment): {e}")
+
     try:
         # อัปเดตสถานะ/LED ของช่องนี้ (ก่อนเริ่ม)
         publish_slot_status_quick_single(index)
 
-        i2c_move_servo_180(index, 80)
+        i2c_move_servo_180(index, 75)
         log_event(f"🔄 เปิดมอเตอร์ช่อง {INDEX_TO_SLOT[index]} (→ 180°)")
         time.sleep(0.25)  # quiet window หลังขยับ
 
@@ -504,7 +510,8 @@ def Storage_compartment(index: int) -> None:
                 time.sleep(0.25)  # quiet window ก่อนอ่านสรุป
 
                 # สรุป: ลองอ่านให้ได้ค่าก่อน (พร้อม re-init ถ้าจำเป็น)
-                capacity = read_until_ok_or_reinit(index, pre_wait_s=2.0, post_wait_s=1.5)
+                # capacity = read_until_ok_or_reinit(index, pre_wait_s=2.0, post_wait_s=1.5)
+                capacity = read_sensor
                 is_connected = internet_ok()
                 is_open = not i2c_is_door_closed(index)
 
@@ -525,6 +532,14 @@ def Storage_compartment(index: int) -> None:
     except Exception as e:
         log.error(f"[ERR] Storage_compartment({INDEX_TO_SLOT[index]}): {e}")
 
+    finally:
+        # 🔻 ปิดเซ็นเซอร์หลังจบงานของช่องนี้ (ออปชัน ผ่าน .env)
+        if AUTO_POWERDOWN:
+            try:
+                power_down_sensors()
+            except Exception as e:
+                log_dbg(f"auto powerdown after Storage_compartment failed: {e}")
+
 
 # =============================================================================
 # DOOR UNLOCK (SOLENOID) SEQUENCE
@@ -535,6 +550,12 @@ def handle_door_unlock(index: int) -> None:
     - ไม่สแกนช่องอื่น
     - อ่านสรุปสุดท้ายด้วย read_until_ok_or_reinit()
     """
+    # 🔌 ให้แน่ใจว่าเซ็นเซอร์พร้อม (lazy init ถ้าเพิ่งถูกปิดไป)
+    try:
+        ensure_sensors_ready()
+    except Exception as e:
+        log_dbg(f"ensure_sensors_ready() failed (handle_door_unlock): {e}")
+
     try:
         # อัปเดตเฉพาะช่องนี้ก่อนเริ่ม
         publish_slot_status_quick_single(index)
@@ -640,6 +661,14 @@ def handle_door_unlock(index: int) -> None:
 
     except Exception as e:
         log.error(f"[ERR] handle_door_unlock({INDEX_TO_SLOT[index]}): {e}")
+
+    finally:
+        # 🔻 ปิดเซ็นเซอร์หลังจบงานของช่องนี้ (ออปชัน ผ่าน .env)
+        if AUTO_POWERDOWN:
+            try:
+                power_down_sensors()
+            except Exception as e:
+                log_dbg(f"auto powerdown after handle_door_unlock failed: {e}")
 
 # =============================================================================
 # TOPIC/PAYLOAD PARSER + MESSAGE DISPATCH
@@ -888,6 +917,7 @@ def start_status_updater(interval_s: int = 120, initial_delay_s: float = 3.0) ->
     สร้างเธรดที่คอย publish สถานะทุกช่องเป็นรอบ ๆ
     - ถ้ามี publish_all_slots_status_once() ให้ใช้
     - ถ้าไม่มี ให้ใช้ publish_all_slots_status_quick()
+    - ปิดเซ็นเซอร์ทุกตัวหลังจบรอบสแกน (ตาม AUTO_POWERDOWN)
     - ป้องกันสตาร์ตซ้ำด้วยแฟล็กและชื่อเธรด
     """
     global _status_updater_started
@@ -908,12 +938,22 @@ def start_status_updater(interval_s: int = 120, initial_delay_s: float = 3.0) ->
                     globals()['publish_all_slots_status_once']()
                 else:
                     publish_all_slots_status_quick()
+
+                # 🔻 ปิดเซ็นเซอร์ทุกตัวหลังจบรอบสแกน (เลือกได้ผ่าน .env)
+                if AUTO_POWERDOWN:
+                    try:
+                        power_down_sensors()
+                    except Exception as e:
+                        log_dbg(f"power_down_sensors() failed: {e}")
+
             except Exception:
                 log.exception("[status-updater] cycle failed")
+
             time.sleep(interval_s)
 
     threading.Thread(target=_loop, daemon=True, name="status-updater").start()
     _status_updater_started = True
+
 
 
 # =============================================================================

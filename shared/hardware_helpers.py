@@ -54,6 +54,8 @@ log = logging.getLogger("hw")
 # I2C & Peripherals
 # =============================================================================
 shared_i2c = busio.I2C(board.SCL, board.SDA)
+_sensors_powered = False                  # เซ็นเซอร์เปิดอยู่หรือไม่
+_pm_lock = threading.RLock()
 
 # --- PCA9685 (Servo) ---
 pca = PCA9685(shared_i2c)
@@ -647,6 +649,21 @@ def init_sensors() -> None:
     if not _vl53_handles and sensor_count > 0:
         print("⚠️ ยังไม่พบเซ็นเซอร์ → ตรวจสาย/ไฟ/ที่อยู่ I2C")
 
+    global _sensors_powered
+    _sensors_powered = True
+
+
+
+def ensure_sensors_ready() -> None:
+    """เปิดใช้งานเซ็นเซอร์เมื่อถูกปิดอยู่ (lazy init แบบตอนบูต)"""
+    global _sensors_powered
+    with _pm_lock:
+        if _sensors_powered and _vl53_handles:
+            return
+        # เปิด XSHUT + init ใหม่ทั้งหมด
+        init_sensors()
+        _sensors_powered = True
+
 def _apply_outlier_reject(sensor_index: int, mm_value: int) -> int:
     """ปัด outlier เทียบ median ล่าสุดในบัฟเฟอร์ (±OUTLIER_MM)."""
     if sensor_index >= len(buffers):
@@ -718,6 +735,8 @@ def read_sensor(sensor_index: int, *, use_filter: bool = True, reset_before: boo
         reset_before: True=ล้างบัฟเฟอร์ช่องนี้ก่อนอ่าน (เริ่มกรองใหม่จากศูนย์)
     """
     # inter-sensor delay
+    ensure_sensors_ready()
+
     if sensor_index < len(_last_read_ts):
         dt = time.monotonic() - _last_read_ts[sensor_index]
         if dt < INTER_SENSOR_DELAY_S:
@@ -811,6 +830,44 @@ def sensor_addr(index: int) -> Optional[int]:
 def vl53_address_map() -> Dict[int, tuple[int, str]]:
     """คืน mapping {index: (i2c_addr, backend)} สำหรับ debug."""
     return {i: (h.addr, h.backend) for i, h in _vl53_handles.items()}
+
+def _set_all_xshut_low():
+    try:
+        for p in XSHUT_PINS:
+            p.switch_to_output(value=False)
+    except Exception:
+        pass
+
+def power_down_sensors() -> None:
+    """ปิด VL53 ทุกตัว: หยุด continuous, XSHUT=LOW, เคลียร์ state ทั้งหมด"""
+    global _sensors_powered, _vl53_handles
+    with _pm_lock:
+        # 1) พยายามหยุดโหมดต่อเนื่องของทุกตัว (ถ้ามี)
+        try:
+            for h in list(_vl53_handles.values()):
+                dev = getattr(h, "handle", None)
+                if dev is None:
+                    continue
+                for m in ("stop_continuous", "stopContinuous"):
+                    if hasattr(dev, m):
+                        try:
+                            getattr(dev, m)()
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+
+        # 2) ดึง XSHUT ทั้งหมดลง
+        _set_all_xshut_low()
+
+        # 3) ล้าง state ภายใน
+        _vl53_handles.clear()
+        buffers.clear()
+        last_values.clear()
+        _last_read_ts.clear()
+
+        _sensors_powered = False
+        print("🔻 VL53 sensors powered down (XSHUT=LOW)")
 
 
 def diagnose_sensor(index: int, samples: int = 10) -> dict:
